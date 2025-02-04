@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using RealRadarSim.Engine;
 using RealRadarSim.Models;
+using RealRadarSim.Tracking;
 
 namespace RealRadarSim.Forms
 {
@@ -40,6 +41,9 @@ namespace RealRadarSim.Forms
         private Point lastMousePos;
         private bool debugMode = false;
 
+        // NEW: The track currently hovered by the mouse (if any)
+        private JPDA_Track hoveredTrack = null;
+
         public RadarForm()
         {
             InitializeComponent();
@@ -71,7 +75,7 @@ namespace RealRadarSim.Forms
             this.Text = "Radar Sim";
             this.BackColor = Color.Black;
 
-            // Scale: convert from real distances to screen pixels
+            // Scale: from real distances to screen pixels
             radarDisplayRadius = Math.Min(this.ClientSize.Width, this.ClientSize.Height) / 2 - 20;
             scale = radarDisplayRadius / engine.GetMaxRange();
 
@@ -91,11 +95,36 @@ namespace RealRadarSim.Forms
 
         private void Form_MouseDown(object? sender, MouseEventArgs e)
         {
+            // If left click and we have a hovered track, lock it
             if (e.Button == MouseButtons.Left)
             {
-                isPanning = true;
-                lastMousePos = e.Location;
+                if (hoveredTrack != null)
+                {
+                    var radar = engine.GetRadar();
+                    if (radar.RadarType.ToLower() == "aircraft")
+                    {
+                        // Build a synthetic TargetCT from hoveredTrack
+                        var lockedTgt = new TargetCT(
+                            hoveredTrack.Filter.State[0],
+                            hoveredTrack.Filter.State[1],
+                            hoveredTrack.Filter.State[2],
+                            0, 0, 0, 0, 1.0,    // dummy speed, turn, etc.
+                            hoveredTrack.FlightName,
+                            10.0,
+                            new Random()
+                        );
+                        radar.LockTarget(lockedTgt);
+                        Console.WriteLine($"[RadarForm] Locked trackID={hoveredTrack.TrackId}, P={hoveredTrack.ExistenceProb:F2}");
+                    }
+                }
+                else
+                {
+                    // Start panning
+                    isPanning = true;
+                    lastMousePos = e.Location;
+                }
             }
+            // Right-click or middle-click can also be used for panning or something else
         }
 
         private void Form_MouseUp(object? sender, MouseEventArgs e)
@@ -107,6 +136,7 @@ namespace RealRadarSim.Forms
         private void Form_MouseMove(object? sender, MouseEventArgs e)
         {
             mousePos = e.Location;
+
             if (isPanning)
             {
                 int dx = e.X - lastMousePos.X;
@@ -115,6 +145,7 @@ namespace RealRadarSim.Forms
                 panY += dy;
                 lastMousePos = e.Location;
             }
+
             this.Invalidate();
         }
 
@@ -149,6 +180,14 @@ namespace RealRadarSim.Forms
             {
                 debugMode = !debugMode;
             }
+            // Press U to unlock
+            else if (e.KeyCode == Keys.U)
+            {
+                var radar = engine.GetRadar();
+                radar.UnlockTarget();
+                Console.WriteLine("[RadarForm] Radar unlocked (bar-scan resumed).");
+            }
+
             this.Invalidate();
         }
 
@@ -160,7 +199,6 @@ namespace RealRadarSim.Forms
             int cx = this.ClientSize.Width / 2;
             int cy = this.ClientSize.Height / 2;
 
-            // Pan & zoom transform
             g.TranslateTransform(cx, cy);
             g.TranslateTransform(panX, panY);
             g.ScaleTransform(zoomFactor, zoomFactor);
@@ -174,13 +212,10 @@ namespace RealRadarSim.Forms
             g.DrawLine(crossPen, -radarDisplayRadius, 0, radarDisplayRadius, 0);
             g.DrawLine(crossPen, 0, -radarDisplayRadius, 0, radarDisplayRadius);
 
-            // Get the radar from the engine
             var radar = engine.GetRadar();
-
-            // Aircraft vs ground radar
             if (radar.RadarType.ToLower() == "aircraft")
             {
-                // Draw wedge
+                // Aircraft wedge
                 double az = radar.CurrentAzimuth;
                 double bw = radar.BeamWidthRad;
                 float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
@@ -200,48 +235,36 @@ namespace RealRadarSim.Forms
             }
             else
             {
-                // Ground radar: single sweep line
+                // Ground radar single sweep line
                 double beamAngle = engine.GetCurrentBeamAngle();
                 float x2 = (float)(radarDisplayRadius * Math.Cos(beamAngle));
                 float y2 = (float)(radarDisplayRadius * Math.Sin(beamAngle));
                 g.DrawLine(sweepPen, 0, 0, x2, y2);
             }
 
-            // ADDED: Show bar coverage at multiple ranges
+            // Elevation bars info
             if (radar.RadarType.ToLower() == "aircraft" && radar.ShowElevationBars)
             {
-                // The bar half width in radians (assuming 2 deg total bar, or 1 deg total, etc.)
-                // Adjust to match your actual barSpacingDeg
                 double barSpacingDeg = 2.0;
                 double barHalfRad = (barSpacingDeg * Math.PI / 180.0) * 0.5;
-
-                // For the current bar
                 double eLow = radar.CurrentElevation - barHalfRad;
                 double eHigh = radar.CurrentElevation + barHalfRad;
 
-                // We'll display coverage at these ranges:
-                double[] coverageRanges = { 10000.0, 20000.0, 30000.0, 40000.0, 50000.0 }; // in meters
-
-                // Build the text string
+                double[] coverageRanges = { 10000, 20000, 30000, 40000, 50000 };
                 string barInfo =
                     $"Elev Bar {radar.CurrentElevationBar + 1}/{radar.AntennaHeight}\n" +
-                    $"Angles: {eLow * 180.0 / Math.PI:F1}° to {eHigh * 180.0 / Math.PI:F1}°\n";
+                    $"Angles: {eLow * 180.0 / Math.PI:F1}° to {eHigh * 180.0 / Math.PI:F1}°\n" +
+                    "Coverage:\n";
 
-                // For each range, compute altitude coverage
-                barInfo += "Coverage:\n";
                 foreach (var rngM in coverageRanges)
                 {
                     double altLow = rngM * Math.Sin(eLow);
                     double altHigh = rngM * Math.Sin(eHigh);
-                    barInfo += $" @ {rngM / 1000.0:F1} km: "
-                            + $"{altLow / 1000.0:F1}–{altHigh / 1000.0:F1} km\n";
+                    barInfo += $" @ {rngM / 1000.0:F1} km: {altLow / 1000.0:F1}–{altHigh / 1000.0:F1} km\n";
                 }
 
-                // Reset transform to draw text on the top-right corner
                 g.ResetTransform();
                 g.DrawString(barInfo, trackFont, textBrush, this.ClientSize.Width - 230, 20);
-
-                // Reapply transform for subsequent drawing
                 g.TranslateTransform(cx, cy);
                 g.TranslateTransform(panX, panY);
                 g.ScaleTransform(zoomFactor, zoomFactor);
@@ -262,21 +285,26 @@ namespace RealRadarSim.Forms
                         g.DrawEllipse(mp, ix - 3, iy - 3, 6, 6);
                     }
                 }
-
                 g.ResetTransform();
-                g.DrawString($"Raw Meas: {rawMeas.Count}", trackFont, textBrush, 10, 10);
-
+                g.DrawString($"Raw Meas: {engine.GetLastMeasurements().Count}", trackFont, textBrush, 10, 10);
                 g.TranslateTransform(cx, cy);
                 g.TranslateTransform(panX, panY);
                 g.ScaleTransform(zoomFactor, zoomFactor);
             }
 
-            // Draw each track (aircraft icon)
+            // Draw tracks & highlight hovered
             var tracks = engine.GetTracks();
+            hoveredTrack = null; // we'll find if any track is near the mouse
+            float closestDist = 999999f;
+
+            // Convert from screen coords to radar coords
+            float invZoom = 1.0f / zoomFactor;
+            float realMouseX = (mousePos.X - cx - panX) * invZoom;
+            float realMouseY = (mousePos.Y - cy - panY) * invZoom;
+
             foreach (var trk in tracks)
             {
                 if (trk.ExistenceProb < 0.20) continue;
-
                 double x = trk.Filter.State[0];
                 double y = trk.Filter.State[1];
                 int tx = (int)(x * scale);
@@ -287,6 +315,18 @@ namespace RealRadarSim.Forms
                 double headingRad = Math.Atan2(vy, vx);
                 double headingDeg = headingRad * 180.0 / Math.PI;
 
+                // Check mouse distance from the track
+                float dx = (float)(tx - realMouseX);
+                float dy = (float)(ty - realMouseY);
+                float distPix = (float)Math.Sqrt(dx * dx + dy * dy);
+
+                if (distPix < 12f && distPix < closestDist)
+                {
+                    closestDist = distPix;
+                    hoveredTrack = trk;
+                }
+
+                // Draw track (plane icon)
                 var gs = g.Save();
                 g.TranslateTransform(tx, ty);
 
@@ -305,13 +345,21 @@ namespace RealRadarSim.Forms
                 g.DrawString(details, trackFont, targetDetailBrush, tx + imgW / 2 + 5, ty - imgH / 2);
             }
 
-            // Show info if the mouse is near a known target
-            float invZoom = 1.0f / zoomFactor;
-            float realMouseX = (mousePos.X - cx - panX);
-            float realMouseY = (mousePos.Y - cy - panY);
-            float radarX = realMouseX * invZoom;
-            float radarY = realMouseY * invZoom;
+            // If we found a hovered track, highlight it
+            if (hoveredTrack != null)
+            {
+                double xx = hoveredTrack.Filter.State[0];
+                double yy = hoveredTrack.Filter.State[1];
+                int hx = (int)(xx * scale);
+                int hy = (int)(yy * scale);
+                // draw a small circle or something
+                using (Pen highlightPen = new Pen(Color.Magenta, 2))
+                {
+                    g.DrawEllipse(highlightPen, hx - 10, hy - 10, 20, 20);
+                }
+            }
 
+            // Optional: Show info if the mouse is near a known "real targetCT" too:
             var targets = engine.GetTargets();
             foreach (var tgt in targets)
             {
@@ -321,8 +369,8 @@ namespace RealRadarSim.Forms
                 int px = (int)(tx * scale);
                 int py = (int)(ty * scale);
 
-                float dx = (float)(radarX - px);
-                float dy = (float)(radarY - py);
+                float dx = (float)(px - realMouseX);
+                float dy = (float)(py - realMouseY);
                 float distPix = (float)Math.Sqrt(dx * dx + dy * dy);
                 if (distPix < 10.0f)
                 {
@@ -334,10 +382,9 @@ namespace RealRadarSim.Forms
                 }
             }
         }
+
         private void RadarForm_Load(object sender, EventArgs e)
         {
-            // Możesz umieścić tutaj kod inicjalizacyjny, jeśli jest potrzebny.
         }
-
     }
 }

@@ -13,7 +13,6 @@ namespace RealRadarSim.Engine
         private double dt = 0.1;
         public double Time { get; private set; } = 0.0;
 
-        // Non-null after constructor finishes
         private List<TargetCT> Targets = new List<TargetCT>();
         private AdvancedRadar Radar;
         private TrackManager trackManager;
@@ -24,7 +23,6 @@ namespace RealRadarSim.Engine
         {
             this.rng = rng;
 
-            // Simple track manager (assuming you have a "TrackManager" in RealRadarSim.Tracking)
             trackManager = new TrackManager(rng)
             {
                 InitGateThreshold = 14.07,
@@ -42,7 +40,6 @@ namespace RealRadarSim.Engine
                 CandidateMergeDistance = 1500.0
             };
 
-            // Attempt to load config.lua
             if (File.Exists("config.lua"))
             {
                 try
@@ -97,23 +94,23 @@ namespace RealRadarSim.Engine
                 double cfarGuardWidth = GetNumberOrDefault(radarTable, "cfarGuardWidth", 300.0);
                 double cfarThresholdMultiplier = GetNumberOrDefault(radarTable, "cfarThresholdMultiplier", 8.0);
                 double clusterDistanceMeters = GetNumberOrDefault(radarTable, "clusterDistanceMeters", 600.0);
-                // Radar type:
                 string radarType = radarTable.Get("radarType").Type == DataType.String
                     ? radarTable.Get("radarType").String
                     : "ground";
 
-                // Additional booleans:
                 double antennaHeight = GetNumberOrDefault(radarTable, "antennaHeight", 0.0);
                 bool showAzimuthBars = GetBoolOrDefault(radarTable, "showAzimuthBars", false);
                 bool showElevationBars = GetBoolOrDefault(radarTable, "showElevationBars", false);
 
-                // Horizontal and bar config:
                 double antennaAzimuthScan = GetNumberOrDefault(radarTable, "antennaAzimuthScan", 140.0);
                 int antennaElevationBars = (int)GetNumberOrDefault(radarTable, "antennaElevationBars", 4);
                 double barSpacing = GetNumberOrDefault(radarTable, "barSpacingDeg", 2.0);
 
-                // NEW: read tilt offset from Lua
                 double tiltOffsetDeg = GetNumberOrDefault(radarTable, "tiltOffsetDeg", 0.0);
+
+                // NEW lock-related config
+                double lockRange = GetNumberOrDefault(radarTable, "lockRange", 50000.0);
+                double lockSNRThreshold = GetNumberOrDefault(radarTable, "lockSNRThreshold", 5.0);
 
                 // Construct radar
                 Radar = new AdvancedRadar(
@@ -132,12 +129,13 @@ namespace RealRadarSim.Engine
                     cfarThresholdMultiplier,
                     clusterDistanceMeters,
                     radarType.ToLower(),
-                    antennaElevationBars,  // use antennaElevationBars as the int antenna height
-                    antennaAzimuthScan,    // antenna azimuth scan in degrees
-                    tiltOffsetDeg          // tilt offset in degrees
+                    antennaElevationBars,
+                    antennaAzimuthScan,
+                    tiltOffsetDeg,
+                    lockRange,
+                    lockSNRThreshold
                 );
 
-                // Assign additional properties: // if you need to override the antenna height from Lua
                 Radar.ShowAzimuthBars = showAzimuthBars;
                 Radar.ShowElevationBars = showElevationBars;
             }
@@ -218,10 +216,18 @@ namespace RealRadarSim.Engine
 
         private void InitializeDefaultConfiguration()
         {
+            // Use default lockRange & lockSNRThreshold
             Radar = new AdvancedRadar(
                 100000, 10.0, 36.0, 1e-10,
                 15000.0, 10000.0, 0.2, 100.0, 0.001,
-                rng
+                rng,
+                5000.0, 300.0, 8.0, 600.0,
+                "ground",
+                1,
+                140.0,
+                0.0,
+                50000.0,
+                5.0
             );
             SetDefaultTargets();
         }
@@ -243,7 +249,6 @@ namespace RealRadarSim.Engine
             return dynVal.Type == DataType.Number ? dynVal.Number : defVal;
         }
 
-        // ADD THIS METHOD to fix the missing GetBoolOrDefault error.
         private bool GetBoolOrDefault(Table tbl, string key, bool defVal)
         {
             var dynVal = tbl.Get(key);

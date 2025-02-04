@@ -47,9 +47,48 @@ namespace RealRadarSim.Models
         private int currentElevationBar;  // The active bar index
         private bool scanLeftToRight;
 
-        // ADDED: Public read‐only property to expose the current elevation bar index.
-        public int CurrentElevationBar => currentElevationBar;  // ADDED
+        /// <summary>
+        /// The current bar index for aircraft radar, for UI display.
+        /// </summary>
+        public int CurrentElevationBar => currentElevationBar;
 
+        // ================================
+        // LOCK-RELATED FIELDS
+        // ================================
+        private TargetCT lockedTarget = null;
+        public bool IsLocked => (lockedTarget != null);
+
+        /// <summary>
+        /// A shorter maximum range for actually tracking/locking a target (loses lock above this range).
+        /// Configurable by Lua. Default 50,000.
+        /// </summary>
+        private double lockRange = 50000.0;
+
+        /// <summary>
+        /// If the locked target’s SNR falls below this threshold, the radar will lose lock.
+        /// Configurable by Lua. Default = 5.0.
+        /// </summary>
+        private double lockSNRThreshold = 5.0;
+
+        // ================================
+        // PUBLIC API
+        // ================================
+        public void LockTarget(TargetCT target)
+        {
+            if (RadarType == "aircraft")
+            {
+                lockedTarget = target;
+            }
+        }
+
+        public void UnlockTarget()
+        {
+            lockedTarget = null;
+        }
+
+        // ================================
+        // CONSTRUCTOR
+        // ================================
         public AdvancedRadar(
             double maxRange,
             double beamWidthDeg,
@@ -68,7 +107,9 @@ namespace RealRadarSim.Models
             string radarType = "ground",
             int antennaHeight = 1,
             double antennaAzimuthScanDeg = 140.0,
-            double tiltOffsetDeg = 0.0
+            double tiltOffsetDeg = 0.0,
+            double lockRange = 50000.0,          // <== ADDED
+            double lockSNRThreshold = 5.0        // <== ADDED
         )
         {
             MaxRange = maxRange;
@@ -90,6 +131,10 @@ namespace RealRadarSim.Models
             AntennaAzimuthScanDegrees = antennaAzimuthScanDeg;
             TiltOffsetDeg = tiltOffsetDeg;
 
+            // Lock-related
+            this.lockRange = lockRange;
+            this.lockSNRThreshold = lockSNRThreshold;
+
             if (RadarType == "aircraft")
             {
                 InitializeAircraftMode();
@@ -104,27 +149,18 @@ namespace RealRadarSim.Models
         {
             // Example: each bar spaced by 2°
             double barSpacingDeg = 2.0;
-
-            // Convert degrees to radians
             double barSpacingRad = barSpacingDeg * Math.PI / 180.0;
 
-            // We want the total vertical coverage to be (AntennaHeight - 1) * barSpacingDeg
-            // and centered around TiltOffsetDeg.
             double tiltOffsetRad = TiltOffsetDeg * Math.PI / 180.0;
-
             double totalElevDeg = (AntennaHeight - 1) * barSpacingDeg;
             double halfSpanRad = (totalElevDeg * 0.5) * (Math.PI / 180.0);
 
-            // So minElevation is (tiltOffsetRad - halfSpanRad) 
-            // and maxElevation is (tiltOffsetRad + halfSpanRad).
             minElevation = tiltOffsetRad - halfSpanRad;
             maxElevation = tiltOffsetRad + halfSpanRad;
 
-            // Start scanning from the lowest bar.
             currentElevationBar = 0;
             CurrentElevation = minElevation;
 
-            // Azimuth scanning from - half Az to + half Az
             double halfAzDeg = AntennaAzimuthScanDegrees * 0.5;
             minAzimuth = -halfAzDeg * Math.PI / 180.0;
             maxAzimuth = halfAzDeg * Math.PI / 180.0;
@@ -133,28 +169,40 @@ namespace RealRadarSim.Models
             scanLeftToRight = true;
         }
 
+        // ================================
+        // MAIN UPDATE
+        // ================================
         public void UpdateBeam(double dt)
         {
             if (RadarType == "aircraft")
             {
-                double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
-                CurrentAzimuth += dAz;
-                if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
+                if (lockedTarget != null)
                 {
-                    CurrentAzimuth = maxAzimuth;
-                    scanLeftToRight = false;
-                    AdvanceElevationBar();
+                    TrackLockedTarget(dt);
                 }
-                else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
+                else
                 {
-                    CurrentAzimuth = minAzimuth;
-                    scanLeftToRight = true;
-                    AdvanceElevationBar();
+                    // Normal bar-scan logic
+                    double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
+                    CurrentAzimuth += dAz;
+
+                    if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
+                    {
+                        CurrentAzimuth = maxAzimuth;
+                        scanLeftToRight = false;
+                        AdvanceElevationBar();
+                    }
+                    else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
+                    {
+                        CurrentAzimuth = minAzimuth;
+                        scanLeftToRight = true;
+                        AdvanceElevationBar();
+                    }
                 }
             }
             else
             {
-                // 360° ground radar style
+                // Ground radar 360° rotation
                 CurrentBeamAngle += rotationSpeedRadSec * dt;
                 if (CurrentBeamAngle > 2 * Math.PI)
                     CurrentBeamAngle -= 2 * Math.PI;
@@ -163,19 +211,52 @@ namespace RealRadarSim.Models
 
         private void AdvanceElevationBar()
         {
-            // Move to the next bar index.
             currentElevationBar++;
             if (currentElevationBar >= AntennaHeight)
                 currentElevationBar = 0;
 
-            // For barSpacingDeg used above:
             double barSpacingDeg = 2.0;
             double barSpacingRad = barSpacingDeg * Math.PI / 180.0;
 
-            // Recompute the bar’s elevation from the minElevation
             CurrentElevation = minElevation + currentElevationBar * barSpacingRad;
         }
 
+        // ================================
+        // TRACK-LOCKED TARGET LOGIC
+        // ================================
+        private void TrackLockedTarget(double dt)
+        {
+            double x = lockedTarget.State[0];
+            double y = lockedTarget.State[1];
+            double z = lockedTarget.State[2];
+            double r = Math.Sqrt(x * x + y * y + z * z);
+
+            // Condition #1: if beyond lockRange, lose lock
+            if (r > lockRange)
+            {
+                UnlockTarget();
+                return;
+            }
+
+            // Condition #2: if target SNR is too low, lose lock
+            double snr = snr0 * (lockedTarget.RCS / 10.0) * Math.Pow(referenceRange / r, 4);
+            if (snr < lockSNRThreshold)
+            {
+                UnlockTarget();
+                return;
+            }
+
+            // If still locked, point antenna at the target:
+            double az = Math.Atan2(y, x);
+            double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
+
+            CurrentAzimuth = az;
+            CurrentElevation = el;
+        }
+
+        // ================================
+        // MEASUREMENT GENERATION
+        // ================================
         public List<Measurement> GetMeasurements(List<TargetCT> targets)
         {
             var rawMeas = new List<Measurement>();
@@ -212,13 +293,25 @@ namespace RealRadarSim.Models
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
 
+            // Range-dependent beam width
+            double nominalBeamWidth = BeamWidthRad;
+            double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0; // e.g., 30°
+            double effectiveBeamWidth = nominalBeamWidth;
+
+            if (r < referenceRange)
+            {
+                effectiveBeamWidth = nominalBeamWidth * (referenceRange / r);
+                if (effectiveBeamWidth > maxEffectiveBeamWidth)
+                    effectiveBeamWidth = maxEffectiveBeamWidth;
+            }
+
+            // Check if within current beam (aircraft or ground)
             if (RadarType == "aircraft")
             {
                 double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
-                // Check if within azimuth beam
-                if (diffAz > BeamWidthRad * 0.5) return null;
+                if (diffAz > effectiveBeamWidth * 0.5) return null;
 
-                // The code uses bar halfwidth of ~1° or 2° depending on your config
+                // Elevation check (assuming 2° bar)
                 const double singleBarDeg = 2.0;
                 double barHalfRad = (singleBarDeg * Math.PI / 180.0) * 0.5;
                 double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
@@ -226,13 +319,15 @@ namespace RealRadarSim.Models
             }
             else
             {
-                // ground radar
+                // Ground radar
                 double diffBeam = Math.Abs(NormalizeAngle(az - CurrentBeamAngle));
-                if (diffBeam > BeamWidthRad * 0.5) return null;
+                if (diffBeam > effectiveBeamWidth * 0.5) return null;
             }
 
-            // SNR check
+            // Compute SNR
             double snr = snr0 * (tgt.RCS / 10.0) * Math.Pow(referenceRange / r, 2);
+            // Adjust SNR for beam widening
+            snr *= (nominalBeamWidth / effectiveBeamWidth);
             if (snr < requiredSNR) return null;
 
             // Measurement noise
