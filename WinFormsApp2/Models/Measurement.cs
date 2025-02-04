@@ -1,5 +1,8 @@
 ﻿namespace RealRadarSim.Models
 {
+    /// <summary>
+    /// Radar measurement for one detection (range, az, el, amplitude).
+    /// </summary>
     public class Measurement
     {
         public double Range;
