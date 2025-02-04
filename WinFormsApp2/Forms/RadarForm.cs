@@ -55,26 +55,27 @@ namespace RealRadarSim.Forms
                 Environment.Exit(1);
             }
 
-            // Create engine
+            // Create simulation engine
             engine = new SimulationEngine(new Random());
 
-            // Setup timer
+            // Timer for simulation updates
             simulationTimer = new System.Windows.Forms.Timer();
             simulationTimer.Interval = (int)(engine.GetDt() * 1000.0);
             simulationTimer.Tick += SimulationTimer_Tick;
             simulationTimer.Start();
 
-            // Basic form
+            // Form settings
             this.DoubleBuffered = true;
             this.Width = 1200;
             this.Height = 1000;
             this.Text = "Radar Sim";
             this.BackColor = Color.Black;
 
+            // Scale: convert from real distances to screen pixels
             radarDisplayRadius = Math.Min(this.ClientSize.Width, this.ClientSize.Height) / 2 - 20;
             scale = radarDisplayRadius / engine.GetMaxRange();
 
-            // Input events
+            // Event handlers
             this.MouseMove += Form_MouseMove;
             this.MouseWheel += Form_MouseWheel;
             this.KeyDown += Form_KeyDown;
@@ -134,12 +135,12 @@ namespace RealRadarSim.Forms
 
         private void Form_KeyDown(object? sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.Oemplus)
+            if (e.KeyCode == Keys.Oemplus || e.KeyCode == Keys.Add)
             {
                 zoomFactor += zoomStep;
                 if (zoomFactor > maxZoom) zoomFactor = maxZoom;
             }
-            else if (e.KeyCode == Keys.OemMinus)
+            else if (e.KeyCode == Keys.OemMinus || e.KeyCode == Keys.Subtract)
             {
                 zoomFactor -= zoomStep;
                 if (zoomFactor < minZoom) zoomFactor = minZoom;
@@ -159,7 +160,7 @@ namespace RealRadarSim.Forms
             int cx = this.ClientSize.Width / 2;
             int cy = this.ClientSize.Height / 2;
 
-            // Pan & zoom
+            // Pan & zoom transform
             g.TranslateTransform(cx, cy);
             g.TranslateTransform(panX, panY);
             g.ScaleTransform(zoomFactor, zoomFactor);
@@ -173,7 +174,10 @@ namespace RealRadarSim.Forms
             g.DrawLine(crossPen, -radarDisplayRadius, 0, radarDisplayRadius, 0);
             g.DrawLine(crossPen, 0, -radarDisplayRadius, 0, radarDisplayRadius);
 
+            // Get the radar from the engine
             var radar = engine.GetRadar();
+
+            // Aircraft vs ground radar
             if (radar.RadarType.ToLower() == "aircraft")
             {
                 // Draw wedge
@@ -193,29 +197,57 @@ namespace RealRadarSim.Forms
                     -radarDisplayRadius, -radarDisplayRadius,
                     radarDisplayRadius * 2, radarDisplayRadius * 2,
                     startAngle, sweepAngle);
-
-                if (radar.ShowElevationBars)
-                {
-                    string txt = $"Elevation: {radar.CurrentElevation * 180.0 / Math.PI:F1}°";
-                    g.ResetTransform();
-                    g.DrawString(txt, trackFont, textBrush, this.ClientSize.Width - 160, 10);
-
-                    // Reapply transforms
-                    g.TranslateTransform(cx, cy);
-                    g.TranslateTransform(panX, panY);
-                    g.ScaleTransform(zoomFactor, zoomFactor);
-                }
             }
             else
             {
-                // ground sweep
+                // Ground radar: single sweep line
                 double beamAngle = engine.GetCurrentBeamAngle();
                 float x2 = (float)(radarDisplayRadius * Math.Cos(beamAngle));
                 float y2 = (float)(radarDisplayRadius * Math.Sin(beamAngle));
                 g.DrawLine(sweepPen, 0, 0, x2, y2);
             }
 
-            // Debug: draw raw measurements
+            // ADDED: Show bar coverage at multiple ranges
+            if (radar.RadarType.ToLower() == "aircraft" && radar.ShowElevationBars)
+            {
+                // The bar half width in radians (assuming 2 deg total bar, or 1 deg total, etc.)
+                // Adjust to match your actual barSpacingDeg
+                double barSpacingDeg = 2.0;
+                double barHalfRad = (barSpacingDeg * Math.PI / 180.0) * 0.5;
+
+                // For the current bar
+                double eLow = radar.CurrentElevation - barHalfRad;
+                double eHigh = radar.CurrentElevation + barHalfRad;
+
+                // We'll display coverage at these ranges:
+                double[] coverageRanges = { 10000.0, 20000.0, 30000.0, 40000.0, 50000.0 }; // in meters
+
+                // Build the text string
+                string barInfo =
+                    $"Elev Bar {radar.CurrentElevationBar + 1}/{radar.AntennaHeight}\n" +
+                    $"Angles: {eLow * 180.0 / Math.PI:F1}° to {eHigh * 180.0 / Math.PI:F1}°\n";
+
+                // For each range, compute altitude coverage
+                barInfo += "Coverage:\n";
+                foreach (var rngM in coverageRanges)
+                {
+                    double altLow = rngM * Math.Sin(eLow);
+                    double altHigh = rngM * Math.Sin(eHigh);
+                    barInfo += $" @ {rngM / 1000.0:F1} km: "
+                            + $"{altLow / 1000.0:F1}–{altHigh / 1000.0:F1} km\n";
+                }
+
+                // Reset transform to draw text on the top-right corner
+                g.ResetTransform();
+                g.DrawString(barInfo, trackFont, textBrush, this.ClientSize.Width - 230, 20);
+
+                // Reapply transform for subsequent drawing
+                g.TranslateTransform(cx, cy);
+                g.TranslateTransform(panX, panY);
+                g.ScaleTransform(zoomFactor, zoomFactor);
+            }
+
+            // Debug raw measurements
             if (debugMode)
             {
                 var rawMeas = engine.GetLastMeasurements();
@@ -230,6 +262,7 @@ namespace RealRadarSim.Forms
                         g.DrawEllipse(mp, ix - 3, iy - 3, 6, 6);
                     }
                 }
+
                 g.ResetTransform();
                 g.DrawString($"Raw Meas: {rawMeas.Count}", trackFont, textBrush, 10, 10);
 
@@ -238,7 +271,7 @@ namespace RealRadarSim.Forms
                 g.ScaleTransform(zoomFactor, zoomFactor);
             }
 
-            // Show tracks
+            // Draw each track (aircraft icon)
             var tracks = engine.GetTracks();
             foreach (var trk in tracks)
             {
@@ -267,11 +300,12 @@ namespace RealRadarSim.Forms
 
                 g.Restore(gs);
 
-                string details = $"T{trk.TrackId} [{trk.FlightName}]\nP={trk.ExistenceProb:F2},H={headingDeg:F0}°";
+                string details = $"T{trk.TrackId} [{trk.FlightName}]\n" +
+                                 $"P={trk.ExistenceProb:F2},H={headingDeg:F0}°";
                 g.DrawString(details, trackFont, targetDetailBrush, tx + imgW / 2 + 5, ty - imgH / 2);
             }
 
-            // Show info if mouse near a target
+            // Show info if the mouse is near a known target
             float invZoom = 1.0f / zoomFactor;
             float realMouseX = (mousePos.X - cx - panX);
             float realMouseY = (mousePos.Y - cy - panY);
@@ -300,10 +334,10 @@ namespace RealRadarSim.Forms
                 }
             }
         }
-
-        private void RadarForm_Load(object? sender, EventArgs e)
+        private void RadarForm_Load(object sender, EventArgs e)
         {
-            // optional
+            // Możesz umieścić tutaj kod inicjalizacyjny, jeśli jest potrzebny.
         }
+
     }
 }

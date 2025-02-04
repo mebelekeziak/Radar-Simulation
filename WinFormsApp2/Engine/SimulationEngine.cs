@@ -97,7 +97,6 @@ namespace RealRadarSim.Engine
                 double cfarGuardWidth = GetNumberOrDefault(radarTable, "cfarGuardWidth", 300.0);
                 double cfarThresholdMultiplier = GetNumberOrDefault(radarTable, "cfarThresholdMultiplier", 8.0);
                 double clusterDistanceMeters = GetNumberOrDefault(radarTable, "clusterDistanceMeters", 600.0);
-
                 // Radar type:
                 string radarType = radarTable.Get("radarType").Type == DataType.String
                     ? radarTable.Get("radarType").String
