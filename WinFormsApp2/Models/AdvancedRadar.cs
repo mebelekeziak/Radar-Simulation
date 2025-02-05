@@ -12,9 +12,15 @@ namespace RealRadarSim.Models
 
         private readonly double rotationSpeedRadSec;
         private readonly double falseAlarmDensity;
-        private readonly double snr0;
-        private readonly double referenceRange;
-        private readonly double requiredSNR;
+
+        // SNR parameters in dB
+        private readonly double snr0_dB;              // Reference SNR in dB (for a 1 m² target) at referenceRange.
+        private readonly double requiredSNR_dB;       // Minimum required SNR (in dB) for detection.
+        private readonly double lockSNRThreshold_dB;  // For lock—if SNR falls below this (in dB), lose the lock.
+        private readonly double referenceRange;       // Range at which snr0_dB is defined.
+        private const double referenceRCS = 1.0;        // 1.0 m² (our chosen reference RCS)
+        private readonly double pathLossExponent_dB;    // e.g. 40 dB for 1/r^4 drop-off (or 20 dB for 1/r^2)
+
         private readonly double rangeNoiseBase;
         private readonly double angleNoiseBase;
 
@@ -59,29 +65,20 @@ namespace RealRadarSim.Models
         public bool IsLocked => (lockedTarget != null);
 
         /// <summary>
-        /// A shorter maximum range for actually tracking/locking a target (loses lock above this range).
-        /// Configurable by Lua. Default 50,000.
+        /// A shorter maximum range for tracking/locking a target.
         /// </summary>
         private double lockRange = 50000.0;
-
-        /// <summary>
-        /// If the locked target’s SNR falls below this threshold, the radar will lose lock.
-        /// Configurable by Lua. Default = 5.0.
-        /// </summary>
-        private double lockSNRThreshold = 5.0;
 
         // ================================
         // PUBLIC API
         // ================================
         public void LockTarget(TargetCT target)
         {
-            // Lock onto the actual target instance so its state is updated over time.
             if (RadarType == "aircraft")
             {
                 lockedTarget = target;
             }
         }
-
 
         public void UnlockTarget()
         {
@@ -96,9 +93,9 @@ namespace RealRadarSim.Models
             double beamWidthDeg,
             double rotationSpeedDegSec,
             double falseAlarmDensity,
-            double snr0,
+            double snr0_dB,
             double referenceRange,
-            double requiredSNR,
+            double requiredSNR_dB,
             double rangeNoiseBase,
             double angleNoiseBase,
             Random rng,
@@ -110,17 +107,23 @@ namespace RealRadarSim.Models
             int antennaHeight = 1,
             double antennaAzimuthScanDeg = 140.0,
             double tiltOffsetDeg = 0.0,
-            double lockRange = 50000.0,          // <== ADDED
-            double lockSNRThreshold = 5.0        // <== ADDED
+            double lockRange = 50000.0,
+            double lockSNRThreshold_dB = 5.0,
+            double pathLossExponent_dB = 40.0
         )
         {
             MaxRange = maxRange;
             BeamWidthRad = beamWidthDeg * Math.PI / 180.0;
             rotationSpeedRadSec = rotationSpeedDegSec * Math.PI / 180.0;
             this.falseAlarmDensity = falseAlarmDensity;
-            this.snr0 = snr0;
+
+            // Store SNR parameters (all in dB)
+            this.snr0_dB = snr0_dB;
             this.referenceRange = referenceRange;
-            this.requiredSNR = requiredSNR;
+            this.requiredSNR_dB = requiredSNR_dB;
+            this.lockSNRThreshold_dB = lockSNRThreshold_dB;
+            this.pathLossExponent_dB = pathLossExponent_dB;
+
             this.rangeNoiseBase = rangeNoiseBase;
             this.angleNoiseBase = angleNoiseBase;
             this.rng = rng;
@@ -133,9 +136,7 @@ namespace RealRadarSim.Models
             AntennaAzimuthScanDegrees = antennaAzimuthScanDeg;
             TiltOffsetDeg = tiltOffsetDeg;
 
-            // Lock-related
             this.lockRange = lockRange;
-            this.lockSNRThreshold = lockSNRThreshold;
 
             if (RadarType == "aircraft")
             {
@@ -149,24 +150,20 @@ namespace RealRadarSim.Models
 
         private void InitializeAircraftMode()
         {
-            // Example: each bar spaced by 2°
             double barSpacingDeg = 2.0;
             double barSpacingRad = barSpacingDeg * Math.PI / 180.0;
-
             double tiltOffsetRad = TiltOffsetDeg * Math.PI / 180.0;
             double totalElevDeg = (AntennaHeight - 1) * barSpacingDeg;
             double halfSpanRad = (totalElevDeg * 0.5) * (Math.PI / 180.0);
 
             minElevation = tiltOffsetRad - halfSpanRad;
             maxElevation = tiltOffsetRad + halfSpanRad;
-
             currentElevationBar = 0;
             CurrentElevation = minElevation;
 
             double halfAzDeg = AntennaAzimuthScanDegrees * 0.5;
             minAzimuth = -halfAzDeg * Math.PI / 180.0;
             maxAzimuth = halfAzDeg * Math.PI / 180.0;
-
             CurrentAzimuth = minAzimuth;
             scanLeftToRight = true;
         }
@@ -184,7 +181,6 @@ namespace RealRadarSim.Models
                 }
                 else
                 {
-                    // Normal bar-scan logic
                     double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
                     CurrentAzimuth += dAz;
 
@@ -204,7 +200,6 @@ namespace RealRadarSim.Models
             }
             else
             {
-                // Ground radar 360° rotation
                 CurrentBeamAngle += rotationSpeedRadSec * dt;
                 if (CurrentBeamAngle > 2 * Math.PI)
                     CurrentBeamAngle -= 2 * Math.PI;
@@ -219,7 +214,6 @@ namespace RealRadarSim.Models
 
             double barSpacingDeg = 2.0;
             double barSpacingRad = barSpacingDeg * Math.PI / 180.0;
-
             CurrentElevation = minElevation + currentElevationBar * barSpacingRad;
         }
 
@@ -233,29 +227,22 @@ namespace RealRadarSim.Models
             double z = lockedTarget.State[2];
             double r = Math.Sqrt(x * x + y * y + z * z);
 
-            // Compute SNR using the power-of-four formula
-            double snr = snr0 * (lockedTarget.RCS / 10.0) * Math.Pow(referenceRange / r, 4);
+            // Compute SNR in dB for a locked target using a 1/r^4 model:
+            double snr_dB = snr0_dB
+                + 10.0 * Math.Log10(lockedTarget.RCS / referenceRCS)
+                + 40.0 * Math.Log10(referenceRange / r);
 
-            // Log computed values to a file so you can inspect them.
             try
             {
-                string logEntry = $"Range: {r:F0} m, Computed SNR: {snr:F2}, Threshold: {lockSNRThreshold}{Environment.NewLine}";
+                string logEntry = $"Range: {r:F0} m, SNR(dB): {snr_dB:F1}, LockThreshold(dB): {lockSNRThreshold_dB}{Environment.NewLine}";
                 System.IO.File.AppendAllText("debug_log.txt", logEntry);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // If logging fails, we don't want it to crash the radar.
+                // Ignore logging errors.
             }
 
-            // Check if the target is beyond the lock range
-            if (r > lockRange)
-            {
-                UnlockTarget();
-                return;
-            }
-
-            // Check if SNR is below threshold
-            if (snr < lockSNRThreshold)
+            if (r > lockRange || snr_dB < lockSNRThreshold_dB)
             {
                 UnlockTarget();
                 return;
@@ -263,13 +250,9 @@ namespace RealRadarSim.Models
 
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
-
             CurrentAzimuth = az;
             CurrentElevation = el;
         }
-
-
-
 
         // ================================
         // MEASUREMENT GENERATION
@@ -278,14 +261,14 @@ namespace RealRadarSim.Models
         {
             var rawMeas = new List<Measurement>();
 
-            // Generate target returns
+            // Generate target returns.
             foreach (var tgt in targets)
             {
                 var m = GenerateTargetMeasurement(tgt);
                 if (m != null) rawMeas.Add(m);
             }
 
-            // Generate false alarms
+            // Generate false alarms.
             double sectorArea = 0.5 * BeamWidthRad * MaxRange * MaxRange;
             double lambda = falseAlarmDensity * sectorArea;
             int numFalse = Poisson.Sample(rng, lambda);
@@ -294,7 +277,7 @@ namespace RealRadarSim.Models
                 rawMeas.Add(GenerateFalseAlarm());
             }
 
-            // CFAR & Clustering
+            // Apply CFAR filtering and clustering.
             var cfarDetections = CFARFilterMeasurements(rawMeas);
             return MergeCloseDetections(cfarDetections, ClusterDistanceMeters);
         }
@@ -310,9 +293,9 @@ namespace RealRadarSim.Models
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
 
-            // Range-dependent beam width
+            // Determine an effective beam width (which widens at short ranges).
             double nominalBeamWidth = BeamWidthRad;
-            double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0; // e.g., 30°
+            double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0;
             double effectiveBeamWidth = nominalBeamWidth;
 
             if (r < referenceRange)
@@ -322,13 +305,12 @@ namespace RealRadarSim.Models
                     effectiveBeamWidth = maxEffectiveBeamWidth;
             }
 
-            // Check if within current beam (aircraft or ground)
+            // Check whether the target falls within the current beam.
             if (RadarType == "aircraft")
             {
                 double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
                 if (diffAz > effectiveBeamWidth * 0.5) return null;
 
-                // Elevation check (assuming 2° bar)
                 const double singleBarDeg = 2.0;
                 double barHalfRad = (singleBarDeg * Math.PI / 180.0) * 0.5;
                 double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
@@ -336,23 +318,27 @@ namespace RealRadarSim.Models
             }
             else
             {
-                // Ground radar
                 double diffBeam = Math.Abs(NormalizeAngle(az - CurrentBeamAngle));
                 if (diffBeam > effectiveBeamWidth * 0.5) return null;
             }
 
-            // Compute SNR
-            double snr = snr0 * (tgt.RCS / 10.0) * Math.Pow(referenceRange / r, 2);
-            // Adjust SNR for beam widening
-            snr *= (nominalBeamWidth / effectiveBeamWidth);
-            if (snr < requiredSNR) return null;
+            // Compute SNR in dB. Here we use the 1/r² model (i.e. pathLossExponent_dB) for measurement generation.
+            double snr_dB = snr0_dB
+                + 10.0 * Math.Log10(tgt.RCS / referenceRCS)
+                + pathLossExponent_dB * Math.Log10(referenceRange / r);
 
-            // Measurement noise
+            if (snr_dB < requiredSNR_dB) return null;
+
+            // Convert SNR from dB to linear amplitude.
+            double snr_linear = Math.Pow(10.0, snr_dB / 10.0);
+            // Adjust for beam widening.
+            snr_linear *= (nominalBeamWidth / effectiveBeamWidth);
+
             double rMeas = r + Normal.Sample(rng, 0, rangeNoiseBase);
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = az + Normal.Sample(rng, 0, angleNoiseBase);
             double elMeas = el + Normal.Sample(rng, 0, angleNoiseBase);
-            double amp = snr + Normal.Sample(rng, 0, 0.05 * snr);
+            double amp = snr_linear + Normal.Sample(rng, 0, 0.05 * snr_linear);
 
             return new Measurement
             {
@@ -376,15 +362,19 @@ namespace RealRadarSim.Models
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = NormalizeAngle(azFA + Normal.Sample(rng, 0, angleNoiseBase));
             double elMeas = NormalizeAngle(elFA + Normal.Sample(rng, 0, angleNoiseBase));
-            double falseAmp = Normal.Sample(rng, requiredSNR, 0.2 * requiredSNR);
-            if (falseAmp < 0.0) falseAmp = requiredSNR * 0.8;
+
+            // For false alarms, assume an amplitude near the required threshold.
+            double falseAmp_linear = Math.Pow(10.0, requiredSNR_dB / 10.0)
+                + Normal.Sample(rng, 0, 0.2 * Math.Pow(10.0, requiredSNR_dB / 10.0));
+            if (falseAmp_linear < 0.0)
+                falseAmp_linear = 0.8 * Math.Pow(10.0, requiredSNR_dB / 10.0);
 
             return new Measurement
             {
                 Range = rMeas,
                 Azimuth = azMeas,
                 Elevation = elMeas,
-                Amplitude = falseAmp
+                Amplitude = falseAmp_linear
             };
         }
 
@@ -410,13 +400,15 @@ namespace RealRadarSim.Models
 
                 if (training.Count == 0)
                 {
-                    passed[i] = (cut.Amplitude > (requiredSNR * 1.5));
+                    passed[i] = (cut.Amplitude > (Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.5));
                     continue;
                 }
                 training.Sort();
                 int K = (int)(0.75 * training.Count);
-                if (K >= training.Count) K = training.Count - 1;
-                if (K < 0) K = 0;
+                if (K >= training.Count)
+                    K = training.Count - 1;
+                if (K < 0)
+                    K = 0;
                 double noiseEstimate = training[K];
                 double threshold = CFARThresholdMultiplier * noiseEstimate;
                 passed[i] = (cut.Amplitude >= threshold);
@@ -424,11 +416,12 @@ namespace RealRadarSim.Models
 
             for (int i = 0; i < sorted.Count; i++)
             {
-                if (passed[i]) results.Add(sorted[i]);
+                if (passed[i])
+                    results.Add(sorted[i]);
             }
 
             double avgAmp = (results.Count > 0) ? results.Average(m => m.Amplitude) : 0.0;
-            double minCutoff = Math.Max(requiredSNR * 0.3, 0.2 * avgAmp);
+            double minCutoff = Math.Max(Math.Pow(10.0, requiredSNR_dB / 10.0) * 0.3, 0.2 * avgAmp);
 
             return results.Where(m => m.Amplitude >= minCutoff).ToList();
         }
@@ -450,7 +443,8 @@ namespace RealRadarSim.Models
                 {
                     if (used[j]) continue;
                     double dist = CartesianDistance(current, sorted[j]);
-                    if (dist < maxDist) used[j] = true;
+                    if (dist < maxDist)
+                        used[j] = true;
                 }
             }
             return merged;
@@ -464,7 +458,6 @@ namespace RealRadarSim.Models
             double dx = ax - bx;
             double dy = ay - by;
             double dz = az - bz;
-
             return Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
 
@@ -478,8 +471,10 @@ namespace RealRadarSim.Models
 
         private double NormalizeAngle(double angle)
         {
-            while (angle > Math.PI) angle -= 2.0 * Math.PI;
-            while (angle < -Math.PI) angle += 2.0 * Math.PI;
+            while (angle > Math.PI)
+                angle -= 2.0 * Math.PI;
+            while (angle < -Math.PI)
+                angle += 2.0 * Math.PI;
             return angle;
         }
     }

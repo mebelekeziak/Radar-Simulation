@@ -75,7 +75,7 @@ namespace RealRadarSim.Engine
 
         private void ConfigureFromLua(Table config)
         {
-            // Radar config
+            // Radar configuration.
             var radarDyn = config.Get("radar");
             if (radarDyn.Type == DataType.Table)
             {
@@ -85,9 +85,11 @@ namespace RealRadarSim.Engine
                 double beamWidthDeg = GetNumberOrDefault(radarTable, "beamWidthDeg", 10.0);
                 double rotationSpeedDegSec = GetNumberOrDefault(radarTable, "rotationSpeedDegSec", 36);
                 double falseAlarmDensity = GetNumberOrDefault(radarTable, "falseAlarmDensity", 1e-10);
-                double snr0 = GetNumberOrDefault(radarTable, "snr0", 15000.0);
+
+                // New SNR parameters (in dB)
+                double snr0_dB = GetNumberOrDefault(radarTable, "snr0_dB", 30.0);
                 double referenceRange = GetNumberOrDefault(radarTable, "referenceRange", 10000.0);
-                double requiredSNR = GetNumberOrDefault(radarTable, "requiredSNR", 0.2);
+                double requiredSNR_dB = GetNumberOrDefault(radarTable, "requiredSNR_dB", 0.0);
                 double rangeNoiseBase = GetNumberOrDefault(radarTable, "rangeNoiseBase", 100.0);
                 double angleNoiseBase = GetNumberOrDefault(radarTable, "angleNoiseBase", 0.001);
                 double cfarWindowWidth = GetNumberOrDefault(radarTable, "cfarWindowWidth", 5000.0);
@@ -101,26 +103,25 @@ namespace RealRadarSim.Engine
                 double antennaHeight = GetNumberOrDefault(radarTable, "antennaHeight", 0.0);
                 bool showAzimuthBars = GetBoolOrDefault(radarTable, "showAzimuthBars", false);
                 bool showElevationBars = GetBoolOrDefault(radarTable, "showElevationBars", false);
-
                 double antennaAzimuthScan = GetNumberOrDefault(radarTable, "antennaAzimuthScan", 140.0);
                 int antennaElevationBars = (int)GetNumberOrDefault(radarTable, "antennaElevationBars", 4);
-                double barSpacing = GetNumberOrDefault(radarTable, "barSpacingDeg", 2.0);
-
                 double tiltOffsetDeg = GetNumberOrDefault(radarTable, "tiltOffsetDeg", 0.0);
 
-                // NEW lock-related config
+                // Lock-related configuration.
                 double lockRange = GetNumberOrDefault(radarTable, "lockRange", 50000.0);
-                double lockSNRThreshold = GetNumberOrDefault(radarTable, "lockSNRThreshold", 5.0);
+                double lockSNRThreshold_dB = GetNumberOrDefault(radarTable, "lockSNRThreshold_dB", 5.0);
 
-                // Construct radar
+                // Path loss exponent in dB (e.g. 40 for 1/r^4)
+                double pathLossExponent_dB = GetNumberOrDefault(radarTable, "pathLossExponent_dB", 40.0);
+
                 Radar = new AdvancedRadar(
                     maxRange,
                     beamWidthDeg,
                     rotationSpeedDegSec,
                     falseAlarmDensity,
-                    snr0,
+                    snr0_dB,
                     referenceRange,
-                    requiredSNR,
+                    requiredSNR_dB,
                     rangeNoiseBase,
                     angleNoiseBase,
                     rng,
@@ -133,7 +134,8 @@ namespace RealRadarSim.Engine
                     antennaAzimuthScan,
                     tiltOffsetDeg,
                     lockRange,
-                    lockSNRThreshold
+                    lockSNRThreshold_dB,
+                    pathLossExponent_dB
                 );
 
                 Radar.ShowAzimuthBars = showAzimuthBars;
@@ -144,7 +146,7 @@ namespace RealRadarSim.Engine
                 InitializeDefaultConfiguration();
             }
 
-            // Targets
+            // Target configuration.
             var targetsDyn = config.Get("targets");
             if (targetsDyn.Type == DataType.Table)
             {
@@ -193,7 +195,7 @@ namespace RealRadarSim.Engine
                 SetDefaultTargets();
             }
 
-            // track manager config
+            // Track Manager configuration.
             var trackManagerDyn = config.Get("trackManager");
             if (trackManagerDyn.Type == DataType.Table)
             {
@@ -216,10 +218,13 @@ namespace RealRadarSim.Engine
 
         private void InitializeDefaultConfiguration()
         {
-            // Use default lockRange & lockSNRThreshold
             Radar = new AdvancedRadar(
                 100000, 10.0, 36.0, 1e-10,
-                15000.0, 10000.0, 0.2, 100.0, 0.001,
+                30.0,       // snr0_dB
+                10000.0,
+                0.0,        // requiredSNR_dB
+                100.0,
+                0.001,
                 rng,
                 5000.0, 300.0, 8.0, 600.0,
                 "ground",
@@ -227,7 +232,8 @@ namespace RealRadarSim.Engine
                 140.0,
                 0.0,
                 50000.0,
-                5.0
+                5.0,
+                40.0       // pathLossExponent_dB
             );
             SetDefaultTargets();
         }
@@ -253,14 +259,9 @@ namespace RealRadarSim.Engine
         {
             var dynVal = tbl.Get(key);
             if (dynVal.Type == DataType.Boolean)
-            {
                 return dynVal.Boolean;
-            }
             else if (dynVal.Type == DataType.Number)
-            {
-                // treat any nonzero number as 'true'
                 return Math.Abs(dynVal.Number) > double.Epsilon;
-            }
             return defVal;
         }
 
@@ -268,21 +269,21 @@ namespace RealRadarSim.Engine
         {
             Time += dt;
 
-            // move targets
+            // Update target positions.
             foreach (var tgt in Targets)
                 tgt.Update(dt);
 
-            // radar scanning
+            // Update radar beam.
             Radar.UpdateBeam(dt);
 
-            // measurements
+            // Generate measurements.
             var measurements = Radar.GetMeasurements(Targets);
             lastMeasurements = measurements;
 
-            // track manager
+            // Update tracks.
             trackManager.UpdateTracks(measurements, dt);
 
-            // optional logic: label track with flight name if near a known target
+            // Optional: assign flight names if tracks are near a known target.
             var tracks = trackManager.GetTracks();
             foreach (var trk in tracks)
             {
@@ -309,7 +310,6 @@ namespace RealRadarSim.Engine
             }
         }
 
-        // Expose needed data
         public double GetDt() => dt;
         public double GetCurrentBeamAngle()
         {
