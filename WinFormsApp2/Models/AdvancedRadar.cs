@@ -45,6 +45,11 @@ namespace RealRadarSim.Models
 
         public double AntennaAzimuthScanDegrees { get; set; } = 140.0;
 
+        public double SNR0_dB => snr0_dB;
+        public double ReferenceRange => referenceRange;
+        public double PathLossExponent_dB => pathLossExponent_dB;
+        public double ReferenceRCS => 1.0;
+
         private double minAzimuth;
         private double maxAzimuth;
         private double minElevation;

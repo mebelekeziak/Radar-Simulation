@@ -329,11 +329,32 @@ namespace RealRadarSim.Forms
                 double headingRad = Math.Atan2(vy, vx);
                 double headingDeg = headingRad * 180.0 / Math.PI;
 
-                // Check distance from mouse to track
+                // Compute SNR info if we have an associated target.
+                string snrInfo = "";
+                if (!string.IsNullOrEmpty(trk.FlightName))
+                {
+                    TargetCT target = FindTargetByFlightName(trk.FlightName);
+                    if (target != null)
+                    {
+                        // Compute current range from the track state (using x, y, and z)
+                        double z = trk.Filter.State[2];
+                        double r = Math.Sqrt(x * x + y * y + z * z);
+                        // Get the radar parameters.
+                        double snr_dB = radar.SNR0_dB
+                                        + 10.0 * Math.Log10(target.RCS / radar.ReferenceRCS)
+                                        + radar.PathLossExponent_dB * Math.Log10(radar.ReferenceRange / r);
+                        snrInfo = $", SNR={snr_dB:F1} dB";
+                    }
+                }
+
+                // Append SNR info to the track details.
+                string details = $"T{trk.TrackId} [{trk.FlightName}]\n" +
+                                 $"P={trk.ExistenceProb:F2}, H={headingDeg:F0}°{snrInfo}";
+
+                // Check distance from mouse to track for hover effect
                 float dx = (float)(tx - realMouseX);
                 float dy = (float)(ty - realMouseY);
                 float distPix = (float)Math.Sqrt(dx * dx + dy * dy);
-
                 if (distPix < 12f && distPix < closestDist)
                 {
                     closestDist = distPix;
@@ -352,8 +373,6 @@ namespace RealRadarSim.Forms
                 g.DrawLine(headingLinePen, 0, 0, 0, -imgH / 2);
                 g.Restore(gs);
 
-                string details = $"T{trk.TrackId} [{trk.FlightName}]\n" +
-                                 $"P={trk.ExistenceProb:F2},H={headingDeg:F0}°";
                 g.DrawString(details, trackFont, targetDetailBrush, tx + imgW / 2 + 5, ty - imgH / 2);
             }
 
