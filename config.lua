@@ -16,13 +16,13 @@ config = {
       rangeNoiseBase = 80.0,           -- Base noise level for range measurements
       angleNoiseBase = 0.0005,         -- Base noise level for angle measurements
       
-      cfarWindowWidth = 20.0,        -- CFAR algorithm window width (in meters)
+      cfarWindowWidth = 10.0,        -- CFAR algorithm window width (in meters)
       cfarGuardWidth = 1.0,          -- CFAR guard width (in meters)
       cfarThresholdMultiplier = 0.5,   -- CFAR threshold multiplier
-      clusterDistanceMeters = 500.0,   -- Distance threshold for clustering detections (in meters)
+      clusterDistanceMeters = 50.0,   -- Distance threshold for clustering detections (in meters)
 
       -- Radar type (can be "ground" or "aircraft")
-      radarType = "aircraft",
+      radarType = "ground",
 
       -- Optional display settings (for visualization purposes)
       showAzimuthBars = true,
@@ -84,18 +84,18 @@ config = {
   },
 
   trackManager = {
-      initGateThreshold = 14.07,
-      initRequiredHits = 3,
-      initScanWindow = 3,
+      initGateThreshold = 35.07,
+      initRequiredHits = 2,
+      initScanWindow = 6,
       initPosStd = 200.0,
       initVelStd = 100.0,
-      gatingThreshold = 14.07,
+      gatingThreshold = 305.07,
       accelNoise = 2.0,
-      probDetection = 0.9,
+      probDetection = 1,
       probSurvival = 0.995,
       pruneThreshold = 0.01,
-      maxTrackMergeDist = 800.0,
+      maxTrackMergeDist = 2800.0,
       maxTrackAge = 40.0,
-      candidateMergeDistance = 1500.0
+      candidateMergeDistance = 2500.0
   }
 }
