@@ -199,7 +199,7 @@ namespace RealRadarSim.Tracking
             // 8) Update candidate tracks from measurements not clearly associated with existing tracks.
             CreateOrUpdateCandidates(measurements, beta0);
 
-            // 9) Confirm candidate tracks (initiate new tracks).
+            // 9) Confirm candidate tracks (initiate new tracks)
             ConfirmCandidates();
 
             // 10) Merge tracks that are close together using Gaussian fusion.

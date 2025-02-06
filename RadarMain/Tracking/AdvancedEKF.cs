@@ -444,7 +444,7 @@ namespace RealRadarSim.Tracking
 
     #region IMMFilter Implementation
     /// <summary>
-    /// Interacting Multiple Model (IMM) filter that runs both an EKF and a UKF.
+    /// Interacting Multiple Model (IMM) filter that runs both an EKF and a UKF
     /// </summary>
     public class IMMFilter : ITrackerFilter
     {

@@ -14,7 +14,7 @@ namespace RealRadarSim.Models
         private readonly double falseAlarmDensity;
 
         // SNR parameters in dB
-        private readonly double snr0_dB;              // Reference SNR in dB (for a 1 m² target) at referenceRange.
+        private readonly double snr0_dB;              // Reference SNR in dB (for a 1 m² target) at referenceRange
         private readonly double requiredSNR_dB;       // Minimum required SNR (in dB) for detection.
         private readonly double lockSNRThreshold_dB;  // For lock—if SNR falls below this (in dB), lose the lock.
         private readonly double referenceRange;       // Range at which snr0_dB is defined.

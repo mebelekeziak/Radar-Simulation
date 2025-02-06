@@ -8,7 +8,7 @@ namespace RealRadarSim.Models
     /// <summary>
     /// Target with a Constant-Turn/Climb model.
     /// State = [x, y, z, speed, headingRad, climbRate].
-    /// heading is stored in radians internally.
+    /// heading is stored in radians internally
     /// </summary>
     public class TargetCT
     {
