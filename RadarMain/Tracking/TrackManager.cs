@@ -87,7 +87,10 @@ namespace RealRadarSim.Tracking
                 for (int m = 0; m < measurements.Count; m++)
                 {
                     double md2 = MahalanobisDistanceSq(track, measurements[m]);
-                    DebugLogger.LogAssociation($"Track {track.TrackId} - Measurement {m}: md2 = {md2:F2}, adaptiveThreshold = {adaptiveThreshold:F2}");
+                    DebugLogger.LogAssociation(
+                        $"Track {track.TrackId} - Measurement {m} {GetMeasurementName(measurements[m])} FAILED gating: md2={md2:F2} " +
+                        $"> adaptiveThreshold={adaptiveThreshold:F2}"
+                    );
                     if (md2 < adaptiveThreshold)
                         gateMatrix[i].Add(m);
                 }
@@ -134,7 +137,6 @@ namespace RealRadarSim.Tracking
                 }
             }
 
-            // 6) Compute association probabilities β and false–alarm probability β0.
             // 6) Compute association probabilities β and false–alarm probability β₀.
             double[] beta0 = new double[measurements.Count];
             Dictionary<(int, int), double> beta = new Dictionary<(int, int), double>();
@@ -171,7 +173,7 @@ namespace RealRadarSim.Tracking
                 // β₀ is the fraction of the likelihood attributed to clutter.
                 beta0[m] = clutterLikelihood / totalLikelihood;
                 DebugLogger.LogAssociation(
-                    $"Measurement {m}: ClutterLikelihood = {clutterLikelihood:F4}, " +
+                    $"Measurement {m} {GetMeasurementName(measurements[m])}: ClutterLikelihood = {clutterLikelihood:F4}, " +
                     $"TrackLikelihoodSum = {measurementLikelihoodSum[m]:F4}, Total = {totalLikelihood:F4}, " +
                     $"beta0 = {beta0[m]:F4}"
                 );
@@ -181,10 +183,9 @@ namespace RealRadarSim.Tracking
                 {
                     double associationProb = (ProbDetection * trackMeasLikelihood[i][m]) / totalLikelihood;
                     beta[(i, m)] = associationProb;
-                    DebugLogger.LogAssociation($"Track {tracks[i].TrackId} - Measurement {m}: beta = {associationProb:F4}");
+                    DebugLogger.LogAssociation($"Track {tracks[i].TrackId} - Measurement {m} {GetMeasurementName(measurements[m])}: beta = {associationProb:F4}");
                 }
             }
-
 
             // 7) Update each track with a weighted (effective) measurement.
             for (int i = 0; i < tracks.Count; i++)
@@ -198,6 +199,9 @@ namespace RealRadarSim.Tracking
                     sumBeta += b;
                     zEff += ToVector(measurements[m]) * b;
                 }
+                DebugLogger.LogAssociation(
+    $"Track {tracks[i].TrackId}: sumBeta = {sumBeta:F4}, existenceProb(before) = {tracks[i].ExistenceProb:F4}"
+);
                 if (sumBeta > 1e-9)
                 {
                     zEff /= sumBeta;
@@ -212,6 +216,11 @@ namespace RealRadarSim.Tracking
                         diff[2] = NormalizeAngle(diff[2]);
                         Pzz += b * (diff.ToColumnMatrix() * diff.ToRowMatrix());
                     }
+
+                    DebugLogger.LogAssociation(
+    $"Track {tracks[i].TrackId}: No effective measurement => missed update. " +
+    $"ExistenceProb decays from {tracks[i].ExistenceProb:F4} to {tracks[i].ExistenceProb * ExistenceDecayFactor:F4}."
+);
                     Pzz /= sumBeta;
                     // Incorporate the intrinsic measurement noise from the filter.
                     Matrix<double> R_meas = tracks[i].Filter.GetMeasurementNoiseCov();
@@ -333,22 +342,59 @@ namespace RealRadarSim.Tracking
             return (state, cov);
         }
 
+        /// <summary>
+        /// Returns a formatted string that identifies the measurement.
+        /// If Measurement had a Name property, you could return that.
+        /// Here we format key values (range, azimuth, elevation, amplitude) as its "name".
+        /// </summary>
+        // Inside TrackManager.cs
+
+        private string GetMeasurementName(Measurement m)
+        {
+            // Check if the measurement includes a target name.
+            // (Ensure that your Measurement class has a TargetName property.)
+            string targetName = !string.IsNullOrEmpty(m.TargetName) ? m.TargetName : "Unknown";
+            return $"[Target: {targetName}, Range: {m.Range:F2}, Az: {m.Azimuth:F2}, El: {m.Elevation:F2}, Amp: {m.Amplitude:F2}]";
+        }
+
+
         // --- Candidate Track Management ---
 
         private void CreateOrUpdateCandidates(List<Measurement> measurements, double[] beta0)
         {
-            // Identify measurements that are not well–associated to any existing track.
+            // Identify measurements that are well-associated with an existing track.
             HashSet<int> associated = new HashSet<int>();
             for (int m = 0; m < measurements.Count; m++)
             {
                 if (beta0[m] < 0.9)
+                {
                     associated.Add(m);
+                    DebugLogger.LogCandidate(
+                        $"Raw measurement {GetMeasurementName(measurements[m])} is well-associated with an existing track (beta0 = {beta0[m]:F2}) " +
+                        $"and will not be used for candidate track initiation."
+                    );
+                }
             }
+            // For the remaining measurements, check if they are explained by any existing track.
             for (int m = 0; m < measurements.Count; m++)
             {
-                if (associated.Contains(m)) continue;
+                if (associated.Contains(m))
+                    continue;
                 if (!IsWithinAnyExistingTrack(measurements[m]))
+                {
                     CreateOrUpdateCandidate(measurements[m]);
+                    DebugLogger.LogCandidate(
+                        $"Raw measurement {GetMeasurementName(measurements[m])} did not match any existing track and " +
+                        $"has been added to candidate tracks."
+                    );
+                }
+                else
+                {
+                    DebugLogger.LogCandidate(
+                        $"Raw measurement {GetMeasurementName(measurements[m])} is close to an existing track and " +
+                        $"will not be initiated as a candidate."
+                    );
+                }
             }
         }
 
@@ -359,12 +405,14 @@ namespace RealRadarSim.Tracking
             foreach (var track in tracks)
             {
                 Vector<double> tPos = track.Filter.State.SubVector(0, 3);
-                if ((tPos - mPos).L2Norm() < rescueRadius)
+                double distance = (tPos - mPos).L2Norm();
+                DebugLogger.LogGating(
+                    $"Measurement {GetMeasurementName(m)} compared with track at [{string.Join(", ", tPos.ToArray().Select(val => val.ToString("F2")))}] gives distance {distance:F2} (rescueRadius = {rescueRadius})"
+                );
+                if (distance < rescueRadius)
                     return true;
-                DebugLogger.LogGating($"Measurement at position {mPos} compared with track at {tPos} gives distance {(tPos - mPos).L2Norm():F2} (rescueRadius = {rescueRadius})");
             }
             return false;
-
         }
 
         private void CreateOrUpdateCandidate(Measurement m)
@@ -384,14 +432,14 @@ namespace RealRadarSim.Tracking
             if (bestCandidate != null)
             {
                 bestCandidate.Measurements.Add(m);
-                DebugLogger.LogCandidate($"Added measurement to existing candidate. Now {bestCandidate.Measurements.Count} measurements.");
+                DebugLogger.LogCandidate($"Added measurement {GetMeasurementName(m)} to existing candidate. Now {bestCandidate.Measurements.Count} measurements.");
             }
             else
             {
                 CandidateTrack newCandidate = new CandidateTrack();
                 newCandidate.Measurements.Add(m);
                 candidates.Add(newCandidate);
-                DebugLogger.LogCandidate("New candidate created.");
+                DebugLogger.LogCandidate($"New candidate created using measurement {GetMeasurementName(m)}.");
             }
         }
 

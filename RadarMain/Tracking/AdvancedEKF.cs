@@ -55,8 +55,8 @@ namespace RealRadarSim.Tracking
 
             R = DenseMatrix.OfArray(new double[,]
             {
-                { 50 * 50,     0,             0 },
-                { 0,       0.01 * 0.01,         0 },
+                { 100 * 100,     0,             0 },
+                { 0,       0.02 * 0.02,         0 },
                 { 0,             0,       0.01 * 0.01 }
             });
         }
