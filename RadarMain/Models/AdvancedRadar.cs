@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using MathNet.Numerics.Distributions;
+using RealRadarSim.Logging;
 
 namespace RealRadarSim.Models
 {
@@ -106,7 +107,7 @@ namespace RealRadarSim.Models
             Random rng,
             double cfarWindowWidth = 5000.0,
             double cfarGuardWidth = 300.0,
-            double cfarThresholdMultiplier = 8.0,
+            double cfarThresholdMultiplier = 0.00000000000005,
             double clusterDistanceMeters = 600.0,
             string radarType = "ground",
             int antennaHeight = 1,
@@ -266,12 +267,18 @@ namespace RealRadarSim.Models
         {
             var rawMeas = new List<Measurement>();
 
+            int targetMeasurementCount = 0;
             // Generate target returns.
             foreach (var tgt in targets)
             {
                 var m = GenerateTargetMeasurement(tgt);
-                if (m != null) rawMeas.Add(m);
+                if (m != null)
+                {
+                    rawMeas.Add(m);
+                    targetMeasurementCount++;
+                }
             }
+            DebugLogger.LogMeasurement($"Generated {targetMeasurementCount} target measurements.");
 
             // Generate false alarms.
             double sectorArea = 0.5 * BeamWidthRad * MaxRange * MaxRange;
@@ -284,6 +291,7 @@ namespace RealRadarSim.Models
 
             // Apply CFAR filtering and clustering.
             var cfarDetections = CFARFilterMeasurements(rawMeas);
+            DebugLogger.LogCFAR($"CFAR Filter: {cfarDetections.Count} detections passed out of {rawMeas.Count} raw measurements.");
             return MergeCloseDetections(cfarDetections, ClusterDistanceMeters);
         }
 
@@ -345,13 +353,16 @@ namespace RealRadarSim.Models
             double elMeas = el + Normal.Sample(rng, 0, angleNoiseBase);
             double amp = snr_linear + Normal.Sample(rng, 0, 0.05 * snr_linear);
 
-            return new Measurement
+            var measurement = new Measurement
             {
                 Range = rMeas,
                 Azimuth = NormalizeAngle(azMeas),
                 Elevation = NormalizeAngle(elMeas),
                 Amplitude = amp
             };
+
+            DebugLogger.LogMeasurement($"Generated target measurement: Range = {measurement.Range:F2}, Azimuth = {measurement.Azimuth:F2}, Elevation = {measurement.Elevation:F2}, Amplitude = {measurement.Amplitude:F2}");
+            return measurement;
         }
 
         private Measurement GenerateFalseAlarm()
@@ -383,6 +394,12 @@ namespace RealRadarSim.Models
             };
         }
 
+        /// <summary>
+        /// Applies a CFAR filter to the provided measurements.
+        /// In addition to filtering, logs all the intermediate values used in the decision.
+        /// </summary>
+        /// <param name="measurements">List of raw measurements.</param>
+        /// <returns>List of measurements that passed the CFAR test.</returns>
         private List<Measurement> CFARFilterMeasurements(List<Measurement> measurements)
         {
             var sorted = measurements.OrderBy(m => m.Range).ToList();
@@ -395,6 +412,7 @@ namespace RealRadarSim.Models
                 double cutRange = cut.Range;
                 var training = new List<double>();
 
+                // Gather training data: neighbor amplitudes within the CFAR window but outside the guard band.
                 foreach (var neighbor in sorted)
                 {
                     if (ReferenceEquals(neighbor, cut)) continue;
@@ -403,11 +421,18 @@ namespace RealRadarSim.Models
                         training.Add(neighbor.Amplitude);
                 }
 
+                DebugLogger.LogCFAR($"CFAR - Measurement index {i}: Range = {cutRange:F2}, Amplitude = {cut.Amplitude:F2}, Training data count = {training.Count}");
+
+                // If no training data is available, use a fallback threshold.
                 if (training.Count == 0)
                 {
-                    passed[i] = (cut.Amplitude > (Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.5));
+                    double fallbackThreshold = Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.5;
+                    passed[i] = (cut.Amplitude > fallbackThreshold);
+                    DebugLogger.LogCFAR($"CFAR - Measurement index {i}: No training data available. Fallback threshold (1.5 * required SNR linear) = {fallbackThreshold:F2}. Decision: {(passed[i] ? "Passed" : "Rejected")}.");
                     continue;
                 }
+
+                // Sort the training data and select the 75th percentile (index K) as the noise estimate.
                 training.Sort();
                 int K = (int)(0.75 * training.Count);
                 if (K >= training.Count)
@@ -415,20 +440,22 @@ namespace RealRadarSim.Models
                 if (K < 0)
                     K = 0;
                 double noiseEstimate = training[K];
+
+                // Compute the detection threshold.
                 double threshold = CFARThresholdMultiplier * noiseEstimate;
                 passed[i] = (cut.Amplitude >= threshold);
+
+                DebugLogger.LogCFAR($"CFAR - Measurement index {i}: Sorted training list = [{string.Join(", ", training.Select(a => a.ToString("F2")))}], K index = {K}, Noise estimate = {noiseEstimate:F2}, CFARThresholdMultiplier = {CFARThresholdMultiplier}, Computed threshold = {threshold:F2}, Decision: {(passed[i] ? "Passed" : "Rejected")}.");
             }
 
+            // Build the list of measurements that passed the CFAR test.
             for (int i = 0; i < sorted.Count; i++)
             {
                 if (passed[i])
                     results.Add(sorted[i]);
             }
 
-            double avgAmp = (results.Count > 0) ? results.Average(m => m.Amplitude) : 0.0;
-            double minCutoff = Math.Max(Math.Pow(10.0, requiredSNR_dB / 10.0) * 0.3, 0.2 * avgAmp);
-
-            return results.Where(m => m.Amplitude >= minCutoff).ToList();
+            return results;
         }
 
         private List<Measurement> MergeCloseDetections(List<Measurement> meas, double maxDist)

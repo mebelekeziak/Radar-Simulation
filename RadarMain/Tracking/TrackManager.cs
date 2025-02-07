@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using MathNet.Numerics.Distributions;
 using MathNet.Numerics.LinearAlgebra;
 using MathNet.Numerics.LinearAlgebra.Double;
 using RealRadarSim.Logging;
@@ -10,8 +11,7 @@ namespace RealRadarSim.Tracking
 {
     /// <summary>
     /// Manages tracks and performs the Joint Probabilistic Data Association (JPDA)
-    /// update using adaptive gating, IMM filtering (EKF+UKF), candidate track initiation,
-    /// merging, and pruning.
+    /// update using adaptive gating, candidate track initiation, merging, and pruning.
     /// </summary>
     public class TrackManager
     {
@@ -21,12 +21,14 @@ namespace RealRadarSim.Tracking
         private Random rng;
 
         // --- Tuning and model parameters ---
+        // Parameters for candidate initiation and gating
         public double InitGateThreshold { get; set; } = 14.07;
         public int InitRequiredHits { get; set; } = 3;
         public int InitScanWindow { get; set; } = 3;
         public double InitPosStd { get; set; } = 200.0;
         public double InitVelStd { get; set; } = 100.0;
-        public double GatingThreshold { get; set; } = 35.0;   // Base chi-square threshold
+        // Base probability for the chi-square gate (set to 0.99 for 99% coverage)
+        public double GatingProbability { get; set; } = 0.999;
         public double AccelNoise { get; set; } = 2.0;
         public double ProbDetection { get; set; } = 0.9;
         public double ProbSurvival { get; set; } = 0.995;
@@ -35,8 +37,11 @@ namespace RealRadarSim.Tracking
         public double MaxTrackAge { get; set; } = 40.0;
         public double CandidateMergeDistance { get; set; } = 1500.0;
         public double ClutterDensity { get; set; } = 1e-6;
-        public double ExistenceIncreaseGain { get; set; } = 0.05;
+        public double ExistenceIncreaseGain { get; set; } = 0.2;
         public double ExistenceDecayFactor { get; set; } = 0.995;
+
+        // Measurement dimension (range, azimuth, elevation)
+        private int measurementDimension = 3;
 
         public TrackManager(Random rng)
         {
@@ -57,23 +62,32 @@ namespace RealRadarSim.Tracking
                 track.Age += dt;
             }
 
-            // 2) Gating: for each track, decide which measurements fall within its (adaptive) gate.
+            // 2) Gating using a chi-square threshold computed from the gating probability.
+            // The threshold is further scaled by dynamic and existence factors.
             List<List<int>> gateMatrix = new List<List<int>>();
             for (int i = 0; i < tracks.Count; i++)
                 gateMatrix.Add(new List<int>());
 
+            // Create a chi-squared distribution for the measurement dimension.
+            var chiSqDist = new ChiSquared(measurementDimension);
+            double baseGateThreshold = chiSqDist.InverseCumulativeDistribution(GatingProbability);
+
             for (int i = 0; i < tracks.Count; i++)
             {
                 var track = tracks[i];
+                // Adjust the threshold based on track dynamics.
                 double speed = track.Filter.State.SubVector(3, 3).L2Norm();
                 double dynamicFactor = 1.0 + 0.5 * (speed / 100.0);
                 double existenceFactor = (track.ExistenceProb > 0.7) ? 1.5 : 1.0;
-                double adaptiveThreshold = GatingThreshold * dynamicFactor * existenceFactor;
-                adaptiveThreshold = Math.Max(5.0, Math.Min(adaptiveThreshold, 100.0)); // clamp
+                double adaptiveThreshold = baseGateThreshold * dynamicFactor * existenceFactor;
+                // Clamp to a reasonable range.
+                adaptiveThreshold = Math.Max(5.0, Math.Min(adaptiveThreshold, 1e6));
 
+                // For each measurement, compute the Mahalanobis distance squared.
                 for (int m = 0; m < measurements.Count; m++)
                 {
                     double md2 = MahalanobisDistanceSq(track, measurements[m]);
+                    DebugLogger.LogAssociation($"Track {track.TrackId} - Measurement {m}: md2 = {md2:F2}, adaptiveThreshold = {adaptiveThreshold:F2}");
                     if (md2 < adaptiveThreshold)
                         gateMatrix[i].Add(m);
                 }
@@ -120,40 +134,64 @@ namespace RealRadarSim.Tracking
                 }
             }
 
-            // 6) Compute association probabilities β and false-alarm probability β0.
-            // Instead of using a constant gating volume, compute a track-specific gating volume based on its predicted measurement covariance.
+            // 6) Compute association probabilities β and false–alarm probability β0.
+            // 6) Compute association probabilities β and false–alarm probability β₀.
             double[] beta0 = new double[measurements.Count];
             Dictionary<(int, int), double> beta = new Dictionary<(int, int), double>();
+
             for (int m = 0; m < measurements.Count; m++)
             {
-                // For measurements associated with multiple tracks, average their gating volumes.
-                List<double> lambdaV_list = new List<double>();
-                foreach (int i in measToTracks[m])
+                // Compute a base gating volume from the chi-square threshold.
+                // Using a spherical approximation:
+                double baseGatingVolume = (4.0 / 3.0) * Math.PI * Math.Pow(Math.Sqrt(baseGateThreshold), 3);
+
+                // If one or more tracks gated on this measurement, adjust the clutter likelihood
+                // using the average square root of the innovation covariance determinant.
+                double avgSqrtDetS = 1.0;  // Default value if no tracks gate on the measurement.
+                if (measToTracks[m].Count > 0)
                 {
-                    Matrix<double> S = tracks[i].Filter.S();
-                    double detS = S.Determinant();
-                    if (detS < 1e-12) detS = 1e-12;
-                    // Use the track’s adaptive threshold (approximated here by GatingThreshold)
-                    double gatingVolume_i = (4.0 / 3.0) * Math.PI * Math.Pow(Math.Sqrt(GatingThreshold), 3) * Math.Sqrt(detS);
-                    lambdaV_list.Add(ClutterDensity * gatingVolume_i);
+                    double sumSqrtDetS = 0.0;
+                    foreach (int i in measToTracks[m])
+                    {
+                        Matrix<double> S = tracks[i].Filter.S();
+                        double detS = Math.Max(S.Determinant(), 1e-12);
+                        sumSqrtDetS += Math.Sqrt(detS);
+                    }
+                    avgSqrtDetS = sumSqrtDetS / measToTracks[m].Count;
                 }
-                double lambdaV_m = (lambdaV_list.Count > 0) ? lambdaV_list.Average() : ClutterDensity;
-                double denominator = measurementLikelihoodSum[m] + lambdaV_m;
-                if (denominator < 1e-12) denominator = 1e-12;
-                beta0[m] = lambdaV_m / denominator;
+
+                // Compute the effective clutter likelihood for measurement m.
+                double clutterLikelihood = ClutterDensity * baseGatingVolume * avgSqrtDetS;
+
+                // Total likelihood: sum of track likelihoods plus the clutter likelihood.
+                double totalLikelihood = measurementLikelihoodSum[m] + clutterLikelihood;
+                if (totalLikelihood < 1e-12)
+                    totalLikelihood = 1e-12;
+
+                // β₀ is the fraction of the likelihood attributed to clutter.
+                beta0[m] = clutterLikelihood / totalLikelihood;
+                DebugLogger.LogAssociation(
+                    $"Measurement {m}: ClutterLikelihood = {clutterLikelihood:F4}, " +
+                    $"TrackLikelihoodSum = {measurementLikelihoodSum[m]:F4}, Total = {totalLikelihood:F4}, " +
+                    $"beta0 = {beta0[m]:F4}"
+                );
+
+                // For each track gating measurement m, compute β(i, m).
                 foreach (int i in measToTracks[m])
                 {
-                    double numerator = ProbDetection * trackMeasLikelihood[i][m];
-                    beta[(i, m)] = numerator / denominator;
+                    double associationProb = (ProbDetection * trackMeasLikelihood[i][m]) / totalLikelihood;
+                    beta[(i, m)] = associationProb;
+                    DebugLogger.LogAssociation($"Track {tracks[i].TrackId} - Measurement {m}: beta = {associationProb:F4}");
                 }
             }
+
 
             // 7) Update each track with a weighted (effective) measurement.
             for (int i = 0; i < tracks.Count; i++)
             {
                 double sumBeta = 0.0;
                 Vector<double> zEff = DenseVector.Create(3, 0.0);
-                // First, compute the weighted measurement mean.
+                // Compute the weighted measurement mean.
                 foreach (int m in gateMatrix[i])
                 {
                     double b = beta.ContainsKey((i, m)) ? beta[(i, m)] : 0.0;
@@ -162,7 +200,7 @@ namespace RealRadarSim.Tracking
                 }
                 if (sumBeta > 1e-9)
                 {
-                    zEff = zEff / sumBeta;
+                    zEff /= sumBeta;
                     // Compute the measurement scatter (covariance) from the gated measurements.
                     Matrix<double> Pzz = DenseMatrix.Create(3, 3, 0.0);
                     foreach (int m in gateMatrix[i])
@@ -175,31 +213,31 @@ namespace RealRadarSim.Tracking
                         Pzz += b * (diff.ToColumnMatrix() * diff.ToRowMatrix());
                     }
                     Pzz /= sumBeta;
-                    // Add the intrinsic measurement noise from the filter.
+                    // Incorporate the intrinsic measurement noise from the filter.
                     Matrix<double> R_meas = tracks[i].Filter.GetMeasurementNoiseCov();
                     Matrix<double> S_jpda = Pzz + R_meas;
-                    // Use the new update overload that accepts custom measurement covariance.
                     tracks[i].Filter.Update(zEff, S_jpda);
                     tracks[i].Age = 0;
                     tracks[i].ExistenceProb = Math.Min(1.0, tracks[i].ExistenceProb + ExistenceIncreaseGain * sumBeta);
+                    DebugLogger.LogTrack($"Track {tracks[i].TrackId} updated: ExistenceProb = {tracks[i].ExistenceProb:F2}");
+                    if (tracks[i].ExistenceProb < PruneThreshold)
+                        DebugLogger.LogTrack($"Track {tracks[i].TrackId} existence probability dropped below prune threshold ({PruneThreshold:F2}).");
                 }
                 else
                 {
-                    // No valid measurement associated—decay existence.
+                    // No valid measurement associated—decay the existence probability.
                     tracks[i].ExistenceProb *= ExistenceDecayFactor;
                     string reason = (gateMatrix[i].Count == 0)
                         ? "No measurements passed the gating threshold."
                         : "Measurements passed gating but association likelihood too low.";
-                    DebugLogger.WriteLine(
-                        $"[Missed Track] TrackID {tracks[i].TrackId}: Missed update. Reason: {reason} " +
-                        $"Existence decayed to {tracks[i].ExistenceProb:F2}");
+                    DebugLogger.LogAssociation($"[Missed Track] Track {tracks[i].TrackId}: {reason} Existence decayed to {tracks[i].ExistenceProb:F2}");
                 }
             }
 
             // 8) Update candidate tracks from measurements not clearly associated with existing tracks.
             CreateOrUpdateCandidates(measurements, beta0);
 
-            // 9) Confirm candidate tracks (initiate new tracks)
+            // 9) Confirm candidate tracks (initiate new tracks).
             ConfirmCandidates();
 
             // 10) Merge tracks that are close together using Gaussian fusion.
@@ -211,6 +249,9 @@ namespace RealRadarSim.Tracking
 
         #region Helper Methods
 
+        /// <summary>
+        /// Computes the Mahalanobis distance squared between the predicted measurement and the actual measurement.
+        /// </summary>
         private double MahalanobisDistanceSq(JPDA_Track track, Measurement m)
         {
             Vector<double> zPred = track.Filter.H(track.Filter.State);
@@ -224,26 +265,45 @@ namespace RealRadarSim.Tracking
             return dist2;
         }
 
+        /// <summary>
+        /// Computes the measurement likelihood for a given track and measurement.
+        /// </summary>
         private double ComputeMeasurementLikelihood(JPDA_Track track, Vector<double> z)
         {
             Vector<double> zPred = track.Filter.H(track.Filter.State);
             Vector<double> y = z - zPred;
             y[1] = NormalizeAngle(y[1]);
             y[2] = NormalizeAngle(y[2]);
+
             Matrix<double> S = track.Filter.S();
             double det = S.Determinant();
             if (det < 1e-12) det = 1e-12;
             Matrix<double> SInv = S.Inverse();
             double dist2 = (y.ToRowMatrix() * SInv * y.ToColumnMatrix())[0, 0];
-            double normFactor = 1.0 / (Math.Pow(2 * Math.PI, 1.5) * Math.Sqrt(det));
-            return normFactor * Math.Exp(-0.5 * dist2);
+            double normFactor = 1.0 / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * Math.Sqrt(det));
+            double likelihood = normFactor * Math.Exp(-0.5 * dist2);
+
+            DebugLogger.LogAssociation(
+                $"Track {track.TrackId} - Measurement Likelihood Calculation:" +
+                $" residual = [{string.Join(", ", y.ToArray().Select(val => val.ToString("F2")))}], " +
+                $"dist2 = {dist2:F2}, det(S) = {det:F2}, normFactor = {normFactor:F4}, " +
+                $"likelihood = {likelihood:F4}"
+            );
+
+            return likelihood;
         }
 
+        /// <summary>
+        /// Converts a Measurement to a 3D vector (range, azimuth, elevation).
+        /// </summary>
         private Vector<double> ToVector(Measurement m)
         {
             return DenseVector.OfArray(new double[] { m.Range, m.Azimuth, m.Elevation });
         }
 
+        /// <summary>
+        /// Normalizes an angle to the range [-π, π].
+        /// </summary>
         private double NormalizeAngle(double angle)
         {
             while (angle > Math.PI) angle -= 2 * Math.PI;
@@ -251,6 +311,9 @@ namespace RealRadarSim.Tracking
             return angle;
         }
 
+        /// <summary>
+        /// Converts a measurement in spherical coordinates to an initial Cartesian state.
+        /// </summary>
         private (Vector<double> state, Matrix<double> cov) MeasurementToInitialState(Vector<double> meas)
         {
             double r = meas[0];
@@ -271,12 +334,14 @@ namespace RealRadarSim.Tracking
         }
 
         // --- Candidate Track Management ---
+
         private void CreateOrUpdateCandidates(List<Measurement> measurements, double[] beta0)
         {
+            // Identify measurements that are not well–associated to any existing track.
             HashSet<int> associated = new HashSet<int>();
             for (int m = 0; m < measurements.Count; m++)
             {
-                if (beta0[m] < 0.85)
+                if (beta0[m] < 0.9)
                     associated.Add(m);
             }
             for (int m = 0; m < measurements.Count; m++)
@@ -289,15 +354,17 @@ namespace RealRadarSim.Tracking
 
         private bool IsWithinAnyExistingTrack(Measurement m)
         {
-            double rescueRadius = 3000.0;
+            double rescueRadius = 6000.0;
             Vector<double> mPos = MeasurementToCartesian(m);
             foreach (var track in tracks)
             {
                 Vector<double> tPos = track.Filter.State.SubVector(0, 3);
                 if ((tPos - mPos).L2Norm() < rescueRadius)
                     return true;
+                DebugLogger.LogGating($"Measurement at position {mPos} compared with track at {tPos} gives distance {(tPos - mPos).L2Norm():F2} (rescueRadius = {rescueRadius})");
             }
             return false;
+
         }
 
         private void CreateOrUpdateCandidate(Measurement m)
@@ -315,12 +382,16 @@ namespace RealRadarSim.Tracking
                 }
             }
             if (bestCandidate != null)
+            {
                 bestCandidate.Measurements.Add(m);
+                DebugLogger.LogCandidate($"Added measurement to existing candidate. Now {bestCandidate.Measurements.Count} measurements.");
+            }
             else
             {
                 CandidateTrack newCandidate = new CandidateTrack();
                 newCandidate.Measurements.Add(m);
                 candidates.Add(newCandidate);
+                DebugLogger.LogCandidate("New candidate created.");
             }
         }
 
@@ -354,29 +425,32 @@ namespace RealRadarSim.Tracking
                 Vector<double> zAvg = zSum / cand.Measurements.Count;
                 (Vector<double> initState, Matrix<double> initCov) = MeasurementToInitialState(zAvg);
 
+                // Create a new track using the EKF.
                 ITrackerFilter ekf = new EKFFilter(initState, initCov, AccelNoise);
-                ITrackerFilter ukf = new UKFFilter(initState, initCov, AccelNoise);
-                ITrackerFilter imm = new IMMFilter(ekf, ukf);
 
                 JPDA_Track newTrack = new JPDA_Track
                 {
                     TrackId = nextTrackId++,
-                    Filter = imm,
+                    Filter = ekf,
                     Age = 0,
                     ExistenceProb = 0.5
                 };
                 tracks.Add(newTrack);
+                DebugLogger.LogCandidate($"Candidate confirmed as new track with ID {newTrack.TrackId}.");
                 candidates.Remove(cand);
             }
         }
 
         // --- Track Merging and Pruning ---
+
         private void MergeCloseTracks()
         {
-            double posMergeThreshold = 7.0;    // Mahalanobis threshold for position
-            double velMergeThreshold = 15.0;   // max velocity difference in m/s
+            // Parameters for merging – these can be further tuned.
+            double posMergeThreshold = 50.0;  // Euclidean distance in meters.
+            double velMergeThreshold = 25.0;   // Difference in velocity (m/s).
             List<JPDA_Track> toRemove = new List<JPDA_Track>();
 
+            // Iterate over pairs of tracks.
             for (int i = 0; i < tracks.Count; i++)
             {
                 for (int j = i + 1; j < tracks.Count; j++)
@@ -384,13 +458,18 @@ namespace RealRadarSim.Tracking
                     JPDA_Track t1 = tracks[i];
                     JPDA_Track t2 = tracks[j];
 
-                    double posMd = TrackMahalanobisDistance(t1, t2);
-                    Vector<double> velDiff = t1.Filter.State.SubVector(3, 3) - t2.Filter.State.SubVector(3, 3);
-                    double velDiffNorm = velDiff.L2Norm();
+                    Vector<double> pos1 = t1.Filter.State.SubVector(0, 3);
+                    Vector<double> pos2 = t2.Filter.State.SubVector(0, 3);
+                    double posDist = (pos1 - pos2).L2Norm();
+                    DebugLogger.LogTrackMerge($"Comparing Track {t1.TrackId} and Track {t2.TrackId}: posDist = {posDist:F2} (threshold = {posMergeThreshold})");
 
-                    if (posMd < posMergeThreshold && velDiffNorm < velMergeThreshold)
+                    Vector<double> vel1 = t1.Filter.State.SubVector(3, 3);
+                    Vector<double> vel2 = t2.Filter.State.SubVector(3, 3);
+                    double velDiffNorm = (vel1 - vel2).L2Norm();
+
+                    if (posDist < posMergeThreshold && velDiffNorm < velMergeThreshold)
                     {
-                        // Gaussian fusion: x_merged = (P1^-1+P2^-1)^-1(P1^-1x1+P2^-1x2)
+                        // Fuse using Gaussian fusion (weighted by the inverse covariance).
                         Matrix<double> P1Inv = t1.Filter.Covariance.Inverse();
                         Matrix<double> P2Inv = t2.Filter.Covariance.Inverse();
                         Matrix<double> fusedCov = (P1Inv + P2Inv).Inverse();
@@ -398,22 +477,12 @@ namespace RealRadarSim.Tracking
                         t2.Filter.State = fusedState;
                         t2.Filter.Covariance = fusedCov;
                         t2.ExistenceProb = Math.Max(t2.ExistenceProb, t1.ExistenceProb);
+                        DebugLogger.LogTrack($"Merging tracks {t1.TrackId} and {t2.TrackId} into track {t2.TrackId}.");
                         toRemove.Add(t1);
                     }
                 }
             }
             tracks.RemoveAll(t => toRemove.Contains(t));
-        }
-
-        private double TrackMahalanobisDistance(JPDA_Track t1, JPDA_Track t2)
-        {
-            Vector<double> diff = t1.Filter.State.SubVector(0, 3) - t2.Filter.State.SubVector(0, 3);
-            Matrix<double> cov1 = t1.Filter.Covariance.SubMatrix(0, 3, 0, 3);
-            Matrix<double> cov2 = t2.Filter.Covariance.SubMatrix(0, 3, 0, 3);
-            Matrix<double> covSum = cov1 + cov2;
-            Matrix<double> invCov = covSum.Inverse();
-            double md2 = (diff.ToRowMatrix() * invCov * diff.ToColumnMatrix())[0, 0];
-            return Math.Sqrt(md2);
         }
 
         private void PruneTracks()

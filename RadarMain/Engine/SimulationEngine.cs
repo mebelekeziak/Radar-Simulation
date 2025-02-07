@@ -5,6 +5,7 @@ using MoonSharp.Interpreter;
 using MoonSharp.Interpreter.Loaders;
 using RealRadarSim.Models;
 using RealRadarSim.Tracking;
+using RealRadarSim.Logging;
 
 namespace RealRadarSim.Engine
 {
@@ -19,10 +20,15 @@ namespace RealRadarSim.Engine
         private Random rng;
         private List<Measurement> lastMeasurements = new List<Measurement>();
 
+        // Throttle for target hit logging (in simulation seconds)
+        private double lastTargetHitLogTime = -1.0;
+        private const double targetHitLogThrottle = 1.0; // log at most once every 1.0 seconds
+
         public SimulationEngine(Random rng)
         {
             this.rng = rng;
 
+            // Initialize the track manager with updated configuration.
             trackManager = new TrackManager(rng)
             {
                 InitGateThreshold = 14.07,
@@ -30,13 +36,14 @@ namespace RealRadarSim.Engine
                 InitScanWindow = 3,
                 InitPosStd = 200.0,
                 InitVelStd = 100.0,
-                GatingThreshold = 14.07,
+                // Remove GatingThreshold and use GatingProbability instead.
+                GatingProbability = 0.99,
                 AccelNoise = 2.0,
                 ProbDetection = 0.9,
                 ProbSurvival = 0.995,
                 PruneThreshold = 0.01,
                 MaxTrackMergeDist = 800.0,
-                MaxTrackAge = 20.0,
+                MaxTrackAge = 40.0,
                 CandidateMergeDistance = 1500.0
             };
 
@@ -205,13 +212,14 @@ namespace RealRadarSim.Engine
                 trackManager.InitScanWindow = (int)GetNumberOrDefault(tm, "initScanWindow", 3);
                 trackManager.InitPosStd = GetNumberOrDefault(tm, "initPosStd", 200.0);
                 trackManager.InitVelStd = GetNumberOrDefault(tm, "initVelStd", 100.0);
-                trackManager.GatingThreshold = GetNumberOrDefault(tm, "gatingThreshold", 14.07);
+                // Use gatingProbability instead of gatingThreshold.
+                trackManager.GatingProbability = GetNumberOrDefault(tm, "gatingProbability", 0.99);
                 trackManager.AccelNoise = GetNumberOrDefault(tm, "accelNoise", 2.0);
                 trackManager.ProbDetection = GetNumberOrDefault(tm, "probDetection", 0.9);
                 trackManager.ProbSurvival = GetNumberOrDefault(tm, "probSurvival", 0.995);
                 trackManager.PruneThreshold = GetNumberOrDefault(tm, "pruneThreshold", 0.01);
                 trackManager.MaxTrackMergeDist = GetNumberOrDefault(tm, "maxTrackMergeDist", 800.0);
-                trackManager.MaxTrackAge = GetNumberOrDefault(tm, "maxTrackAge", 20.0);
+                trackManager.MaxTrackAge = GetNumberOrDefault(tm, "maxTrackAge", 40.0);
                 trackManager.CandidateMergeDistance = GetNumberOrDefault(tm, "candidateMergeDistance", 1500.0);
             }
         }
@@ -279,6 +287,20 @@ namespace RealRadarSim.Engine
             // Generate measurements.
             var measurements = Radar.GetMeasurements(Targets);
             lastMeasurements = measurements;
+
+            // --- Debug logging: Log only if at least one target measurement is generated.
+            // We assume that target-generated measurements have Amplitude > 10
+            int targetMeasurementCount = 0;
+            foreach (var m in measurements)
+            {
+                if (m.Amplitude > 10)
+                    targetMeasurementCount++;
+            }
+            if (targetMeasurementCount > 0 && (Time - lastTargetHitLogTime) >= targetHitLogThrottle)
+            {
+                DebugLogger.LogMeasurement($"Radar beam hit target: {targetMeasurementCount} target measurement(s) at simulation time {Time:F2}s.");
+                lastTargetHitLogTime = Time;
+            }
 
             // Update tracks.
             trackManager.UpdateTracks(measurements, dt);
