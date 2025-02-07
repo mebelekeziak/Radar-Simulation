@@ -1,6 +1,6 @@
 sup
 this simulation right now contains
-extended kalman filter and unscented kalman filter,
+extended kalman filter,
 jpda algorithm,
 cfar,
 lua config
