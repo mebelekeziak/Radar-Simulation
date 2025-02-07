@@ -53,14 +53,10 @@ namespace RealRadarSim.Tracking
             sigmaA = accelNoise;
             adaptiveSigmaA = sigmaA; // initialize adaptive noise to nominal value
 
-            // Updated measurement noise:
-            // - Range std = 50  --> variance = 2500
-            // - Azimuth std = 0.1  --> variance = 0.1^2 = 0.01
-            // - Elevation std = 0.01  --> variance = 0.01^2 = 0.0001
             R = DenseMatrix.OfArray(new double[,]
             {
                 { 50 * 50,     0,             0 },
-                { 0,       0.1 * 0.1,         0 },
+                { 0,       0.01 * 0.01,         0 },
                 { 0,             0,       0.01 * 0.01 }
             });
         }
