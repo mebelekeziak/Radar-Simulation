@@ -228,16 +228,18 @@ namespace RealRadarSim.Models
         // ================================
         private void TrackLockedTarget(double dt)
         {
+            // Extract the target’s current state.
             double x = lockedTarget.State[0];
             double y = lockedTarget.State[1];
             double z = lockedTarget.State[2];
             double r = Math.Sqrt(x * x + y * y + z * z);
 
-            // Compute SNR in dB for a locked target using a 1/r^4 model:
+            // Compute SNR in dB for a locked target using a 1/r^4 model.
             double snr_dB = snr0_dB
                 + 10.0 * Math.Log10(lockedTarget.RCS / referenceRCS)
                 + 40.0 * Math.Log10(referenceRange / r);
 
+            // Log SNR and range details (for debugging purposes).
             try
             {
                 string logEntry = $"Range: {r:F0} m, SNR(dB): {snr_dB:F1}, LockThreshold(dB): {lockSNRThreshold_dB}{Environment.NewLine}";
@@ -248,16 +250,45 @@ namespace RealRadarSim.Models
                 // Ignore logging errors.
             }
 
+            // Check if the target has moved out of range or if the SNR is too low.
             if (r > lockRange || snr_dB < lockSNRThreshold_dB)
             {
                 UnlockTarget();
                 return;
             }
 
-            double az = Math.Atan2(y, x);
-            double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
-            CurrentAzimuth = az;
-            CurrentElevation = el;
+            // Compute the desired azimuth and elevation from the target’s position.
+            double desiredAz = Math.Atan2(y, x);
+            double desiredEl = Math.Atan2(z, Math.Sqrt(x * x + y * y));
+
+            // Define a maximum angular step per update.
+            // Here we use the radar’s rotation speed (in rad/s) scaled by the timestep.
+            double maxAngularStep = rotationSpeedRadSec * dt;
+
+            // Update azimuth smoothly: compute the shortest angular difference and
+            // step toward the target by at most maxAngularStep.
+            double deltaAz = NormalizeAngle(desiredAz - CurrentAzimuth);
+            if (Math.Abs(deltaAz) > maxAngularStep)
+            {
+                CurrentAzimuth += Math.Sign(deltaAz) * maxAngularStep;
+            }
+            else
+            {
+                CurrentAzimuth = desiredAz;
+            }
+            CurrentAzimuth = NormalizeAngle(CurrentAzimuth);
+
+            // Update elevation smoothly in the same manner.
+            double deltaEl = NormalizeAngle(desiredEl - CurrentElevation);
+            if (Math.Abs(deltaEl) > maxAngularStep)
+            {
+                CurrentElevation += Math.Sign(deltaEl) * maxAngularStep;
+            }
+            else
+            {
+                CurrentElevation = desiredEl;
+            }
+            CurrentElevation = NormalizeAngle(CurrentElevation);
         }
 
         // ================================

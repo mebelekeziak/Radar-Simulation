@@ -268,7 +268,8 @@ namespace RealRadarSim.Forms
                 string barInfo =
                     $"Elev Bar {radar.CurrentElevationBar + 1}/{radar.AntennaHeight}\n" +
                     $"Angles: {eLow * 180.0 / Math.PI:F1}° to {eHigh * 180.0 / Math.PI:F1}°\n" +
-                    "Coverage:\n";
+                    "Coverage:\n" +
+                    "Click on target to lock, U to unlock\n";
 
                 foreach (var rngM in coverageRanges)
                 {
