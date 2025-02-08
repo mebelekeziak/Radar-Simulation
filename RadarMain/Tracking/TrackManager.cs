@@ -25,8 +25,8 @@ namespace RealRadarSim.Tracking
         public double InitGateThreshold { get; set; } = 14.07;
         public int InitRequiredHits { get; set; } = 3;
         public int InitScanWindow { get; set; } = 3;
-        public double InitPosStd { get; set; } = 200.0;
-        public double InitVelStd { get; set; } = 100.0;
+        public double InitPosStd { get; set; } = 20.0;
+        public double InitVelStd { get; set; } = 5.0;
         // Base probability for the chi-square gate (set to 0.99 for 99% coverage)
         public double GatingProbability { get; set; } = 0.999;
         public double AccelNoise { get; set; } = 2.0;
