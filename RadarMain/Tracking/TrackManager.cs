@@ -4,7 +4,6 @@ using System.Linq;
 using MathNet.Numerics.Distributions;
 using MathNet.Numerics.LinearAlgebra;
 using MathNet.Numerics.LinearAlgebra.Double;
-using RealRadarSim.Logging;
 using RealRadarSim.Models;
 
 namespace RealRadarSim.Tracking
@@ -27,6 +26,9 @@ namespace RealRadarSim.Tracking
         public int InitScanWindow { get; set; } = 3;
         public double InitPosStd { get; set; } = 20.0;
         public double InitVelStd { get; set; } = 5.0;
+        // NEW: Standard deviation for initial acceleration uncertainty.
+        public double InitAccelStd { get; set; } = 2.0;
+
         // Base probability for the chi-square gate (set to 0.99 for 99% coverage)
         public double GatingProbability { get; set; } = 0.999;
         public double AccelNoise { get; set; } = 2.0;
@@ -87,10 +89,6 @@ namespace RealRadarSim.Tracking
                 for (int m = 0; m < measurements.Count; m++)
                 {
                     double md2 = MahalanobisDistanceSq(track, measurements[m]);
-                    DebugLogger.LogAssociation(
-                        $"Track {track.TrackId} - Measurement {m} {GetMeasurementName(measurements[m])} FAILED gating: md2={md2:F2} " +
-                        $"> adaptiveThreshold={adaptiveThreshold:F2}"
-                    );
                     if (md2 < adaptiveThreshold)
                         gateMatrix[i].Add(m);
                 }
@@ -172,18 +170,12 @@ namespace RealRadarSim.Tracking
 
                 // β₀ is the fraction of the likelihood attributed to clutter.
                 beta0[m] = clutterLikelihood / totalLikelihood;
-                DebugLogger.LogAssociation(
-                    $"Measurement {m} {GetMeasurementName(measurements[m])}: ClutterLikelihood = {clutterLikelihood:F4}, " +
-                    $"TrackLikelihoodSum = {measurementLikelihoodSum[m]:F4}, Total = {totalLikelihood:F4}, " +
-                    $"beta0 = {beta0[m]:F4}"
-                );
 
                 // For each track gating measurement m, compute β(i, m).
                 foreach (int i in measToTracks[m])
                 {
                     double associationProb = (ProbDetection * trackMeasLikelihood[i][m]) / totalLikelihood;
                     beta[(i, m)] = associationProb;
-                    DebugLogger.LogAssociation($"Track {tracks[i].TrackId} - Measurement {m} {GetMeasurementName(measurements[m])}: beta = {associationProb:F4}");
                 }
             }
 
@@ -199,9 +191,6 @@ namespace RealRadarSim.Tracking
                     sumBeta += b;
                     zEff += ToVector(measurements[m]) * b;
                 }
-                DebugLogger.LogAssociation(
-    $"Track {tracks[i].TrackId}: sumBeta = {sumBeta:F4}, existenceProb(before) = {tracks[i].ExistenceProb:F4}"
-);
                 if (sumBeta > 1e-9)
                 {
                     zEff /= sumBeta;
@@ -216,11 +205,6 @@ namespace RealRadarSim.Tracking
                         diff[2] = NormalizeAngle(diff[2]);
                         Pzz += b * (diff.ToColumnMatrix() * diff.ToRowMatrix());
                     }
-
-                    DebugLogger.LogAssociation(
-    $"Track {tracks[i].TrackId}: No effective measurement => missed update. " +
-    $"ExistenceProb decays from {tracks[i].ExistenceProb:F4} to {tracks[i].ExistenceProb * ExistenceDecayFactor:F4}."
-);
                     Pzz /= sumBeta;
                     // Incorporate the intrinsic measurement noise from the filter.
                     Matrix<double> R_meas = tracks[i].Filter.GetMeasurementNoiseCov();
@@ -228,18 +212,11 @@ namespace RealRadarSim.Tracking
                     tracks[i].Filter.Update(zEff, S_jpda);
                     tracks[i].Age = 0;
                     tracks[i].ExistenceProb = Math.Min(1.0, tracks[i].ExistenceProb + ExistenceIncreaseGain * sumBeta);
-                    DebugLogger.LogTrack($"Track {tracks[i].TrackId} updated: ExistenceProb = {tracks[i].ExistenceProb:F2}");
-                    if (tracks[i].ExistenceProb < PruneThreshold)
-                        DebugLogger.LogTrack($"Track {tracks[i].TrackId} existence probability dropped below prune threshold ({PruneThreshold:F2}).");
                 }
                 else
                 {
                     // No valid measurement associated—decay the existence probability.
                     tracks[i].ExistenceProb *= ExistenceDecayFactor;
-                    string reason = (gateMatrix[i].Count == 0)
-                        ? "No measurements passed the gating threshold."
-                        : "Measurements passed gating but association likelihood too low.";
-                    DebugLogger.LogAssociation($"[Missed Track] Track {tracks[i].TrackId}: {reason} Existence decayed to {tracks[i].ExistenceProb:F2}");
                 }
             }
 
@@ -291,14 +268,6 @@ namespace RealRadarSim.Tracking
             double dist2 = (y.ToRowMatrix() * SInv * y.ToColumnMatrix())[0, 0];
             double normFactor = 1.0 / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * Math.Sqrt(det));
             double likelihood = normFactor * Math.Exp(-0.5 * dist2);
-
-            DebugLogger.LogAssociation(
-                $"Track {track.TrackId} - Measurement Likelihood Calculation:" +
-                $" residual = [{string.Join(", ", y.ToArray().Select(val => val.ToString("F2")))}], " +
-                $"dist2 = {dist2:F2}, det(S) = {det:F2}, normFactor = {normFactor:F4}, " +
-                $"likelihood = {likelihood:F4}"
-            );
-
             return likelihood;
         }
 
@@ -322,6 +291,9 @@ namespace RealRadarSim.Tracking
 
         /// <summary>
         /// Converts a measurement in spherical coordinates to an initial Cartesian state.
+        /// 
+        /// UPDATED for a 9-dimensional state:
+        /// [px, py, pz, vx, vy, vz, ax, ay, az]
         /// </summary>
         private (Vector<double> state, Matrix<double> cov) MeasurementToInitialState(Vector<double> meas)
         {
@@ -331,88 +303,52 @@ namespace RealRadarSim.Tracking
             double x = r * Math.Cos(el) * Math.Cos(az);
             double y = r * Math.Cos(el) * Math.Sin(az);
             double z = r * Math.Sin(el);
-            Vector<double> state = DenseVector.OfArray(new double[] { x, y, z, 0, 0, 0 });
-            Matrix<double> cov = DenseMatrix.Create(6, 6, 0.0);
+            // Create a 9-dimensional state: positions; zero velocity; zero acceleration.
+            Vector<double> state = DenseVector.OfArray(new double[] { x, y, z, 0, 0, 0, 0, 0, 0 });
+            // Create a 9x9 covariance matrix.
+            Matrix<double> cov = DenseMatrix.Create(9, 9, 0.0);
+            // Position uncertainties.
             cov[0, 0] = InitPosStd * InitPosStd;
             cov[1, 1] = InitPosStd * InitPosStd;
             cov[2, 2] = InitPosStd * InitPosStd;
+            // Velocity uncertainties.
             cov[3, 3] = InitVelStd * InitVelStd;
             cov[4, 4] = InitVelStd * InitVelStd;
             cov[5, 5] = InitVelStd * InitVelStd;
+            // Acceleration uncertainties.
+            cov[6, 6] = InitAccelStd * InitAccelStd;
+            cov[7, 7] = InitAccelStd * InitAccelStd;
+            cov[8, 8] = InitAccelStd * InitAccelStd;
             return (state, cov);
         }
 
         /// <summary>
         /// Returns a formatted string that identifies the measurement.
-        /// If Measurement had a Name property, you could return that.
-        /// Here we format key values (range, azimuth, elevation, amplitude) as its "name".
         /// </summary>
-        // Inside TrackManager.cs
-
         private string GetMeasurementName(Measurement m)
         {
-            // Check if the measurement includes a target name.
-            // (Ensure that your Measurement class has a TargetName property.)
             string targetName = !string.IsNullOrEmpty(m.TargetName) ? m.TargetName : "Unknown";
             return $"[Target: {targetName}, Range: {m.Range:F2}, Az: {m.Azimuth:F2}, El: {m.Elevation:F2}, Amp: {m.Amplitude:F2}]";
         }
-
 
         // --- Candidate Track Management ---
 
         private void CreateOrUpdateCandidates(List<Measurement> measurements, double[] beta0)
         {
-            // Identify measurements that are well-associated with an existing track.
+            // Mark measurements that are well-associated with existing tracks.
             HashSet<int> associated = new HashSet<int>();
             for (int m = 0; m < measurements.Count; m++)
             {
                 if (beta0[m] < 0.9)
-                {
                     associated.Add(m);
-                    DebugLogger.LogCandidate(
-                        $"Raw measurement {GetMeasurementName(measurements[m])} is well-associated with an existing track (beta0 = {beta0[m]:F2}) " +
-                        $"and will not be used for candidate track initiation."
-                    );
-                }
             }
-            // For the remaining measurements, check if they are explained by any existing track.
+            // For the remaining measurements, update or create new candidates.
             for (int m = 0; m < measurements.Count; m++)
             {
                 if (associated.Contains(m))
                     continue;
-                if (!IsWithinAnyExistingTrack(measurements[m]))
-                {
-                    CreateOrUpdateCandidate(measurements[m]);
-                    DebugLogger.LogCandidate(
-                        $"Raw measurement {GetMeasurementName(measurements[m])} did not match any existing track and " +
-                        $"has been added to candidate tracks."
-                    );
-                }
-                else
-                {
-                    DebugLogger.LogCandidate(
-                        $"Raw measurement {GetMeasurementName(measurements[m])} is close to an existing track and " +
-                        $"will not be initiated as a candidate."
-                    );
-                }
+                CreateOrUpdateCandidate(measurements[m]);
             }
-        }
-
-        private bool IsWithinAnyExistingTrack(Measurement m)
-        {
-            double rescueRadius = 6000.0;
-            Vector<double> mPos = MeasurementToCartesian(m);
-            foreach (var track in tracks)
-            {
-                Vector<double> tPos = track.Filter.State.SubVector(0, 3);
-                double distance = (tPos - mPos).L2Norm();
-                DebugLogger.LogGating(
-                    $"Measurement {GetMeasurementName(m)} compared with track at [{string.Join(", ", tPos.ToArray().Select(val => val.ToString("F2")))}] gives distance {distance:F2} (rescueRadius = {rescueRadius})"
-                );
-                if (distance < rescueRadius)
-                    return true;
-            }
-            return false;
         }
 
         private void CreateOrUpdateCandidate(Measurement m)
@@ -432,14 +368,12 @@ namespace RealRadarSim.Tracking
             if (bestCandidate != null)
             {
                 bestCandidate.Measurements.Add(m);
-                DebugLogger.LogCandidate($"Added measurement {GetMeasurementName(m)} to existing candidate. Now {bestCandidate.Measurements.Count} measurements.");
             }
             else
             {
                 CandidateTrack newCandidate = new CandidateTrack();
                 newCandidate.Measurements.Add(m);
                 candidates.Add(newCandidate);
-                DebugLogger.LogCandidate($"New candidate created using measurement {GetMeasurementName(m)}.");
             }
         }
 
@@ -473,8 +407,8 @@ namespace RealRadarSim.Tracking
                 Vector<double> zAvg = zSum / cand.Measurements.Count;
                 (Vector<double> initState, Matrix<double> initCov) = MeasurementToInitialState(zAvg);
 
-                // Create a new track using the EKF.
-                ITrackerFilter ekf = new EKFFilter(initState, initCov, AccelNoise);
+                // Create a new track using the 9-dimensional EKF.
+                ITrackerFilter ekf = new ManeuveringEKF(initState, initCov, AccelNoise);
 
                 JPDA_Track newTrack = new JPDA_Track
                 {
@@ -484,7 +418,6 @@ namespace RealRadarSim.Tracking
                     ExistenceProb = 0.5
                 };
                 tracks.Add(newTrack);
-                DebugLogger.LogCandidate($"Candidate confirmed as new track with ID {newTrack.TrackId}.");
                 candidates.Remove(cand);
             }
         }
@@ -509,7 +442,6 @@ namespace RealRadarSim.Tracking
                     Vector<double> pos1 = t1.Filter.State.SubVector(0, 3);
                     Vector<double> pos2 = t2.Filter.State.SubVector(0, 3);
                     double posDist = (pos1 - pos2).L2Norm();
-                    DebugLogger.LogTrackMerge($"Comparing Track {t1.TrackId} and Track {t2.TrackId}: posDist = {posDist:F2} (threshold = {posMergeThreshold})");
 
                     Vector<double> vel1 = t1.Filter.State.SubVector(3, 3);
                     Vector<double> vel2 = t2.Filter.State.SubVector(3, 3);
@@ -525,7 +457,6 @@ namespace RealRadarSim.Tracking
                         t2.Filter.State = fusedState;
                         t2.Filter.Covariance = fusedCov;
                         t2.ExistenceProb = Math.Max(t2.ExistenceProb, t1.ExistenceProb);
-                        DebugLogger.LogTrack($"Merging tracks {t1.TrackId} and {t2.TrackId} into track {t2.TrackId}.");
                         toRemove.Add(t1);
                     }
                 }
