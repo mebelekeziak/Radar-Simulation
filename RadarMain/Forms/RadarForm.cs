@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Reflection;
 using System.Windows.Forms;
 using RealRadarSim.Engine;
 using RealRadarSim.Models;
@@ -51,7 +52,17 @@ namespace RealRadarSim.Forms
             // Load plane image
             try
             {
-                planeImage = Image.FromFile("plane.png");
+                Assembly assembly = Assembly.GetExecutingAssembly();
+
+                string resourceName = "RadarEKF.Assets.plane.png";
+
+                using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null)
+                        throw new Exception($"Did not find '{resourceName}'.");
+
+                    planeImage = Image.FromStream(stream);
+                }
             }
             catch (Exception ex)
             {
