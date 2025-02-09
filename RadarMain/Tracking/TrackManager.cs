@@ -24,7 +24,7 @@ namespace RealRadarSim.Tracking
         public double InitGateThreshold { get; set; } = 14.07;
         public int InitRequiredHits { get; set; } = 3;
         public int InitScanWindow { get; set; } = 3;
-        public double InitPosStd { get; set; } = 20.0;
+        public double InitPosStd { get; set; } = 10.0;
         public double InitVelStd { get; set; } = 5.0;
         // NEW: Standard deviation for initial acceleration uncertainty.
         public double InitAccelStd { get; set; } = 2.0;

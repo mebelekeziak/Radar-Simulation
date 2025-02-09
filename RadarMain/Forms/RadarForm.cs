@@ -427,7 +427,6 @@ namespace RealRadarSim.Forms
 
         private void RadarForm_Load(object sender, EventArgs e)
         {
-            // Optional initialization code
         }
     }
 }
