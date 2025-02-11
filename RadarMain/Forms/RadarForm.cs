@@ -12,7 +12,9 @@ using RealRadarSim.Models;
 using RealRadarSim.Tracking;
 
 namespace RealRadarSim.Forms
+
 {
+
     public partial class RadarForm : Form
     {
         private SimulationEngine engine;
@@ -265,31 +267,55 @@ namespace RealRadarSim.Forms
             }
             g.DrawLine(crossPen, -radarDisplayRadius, 0, radarDisplayRadius, 0);
             g.DrawLine(crossPen, 0, -radarDisplayRadius, 0, radarDisplayRadius);
-
             var radar = engine.GetRadar();
             if (radar.RadarType.ToLower() == "aircraft")
             {
-                // Draw aircraft wedge.
-                double az = radar.CurrentAzimuth;
-                double bw = radar.BeamWidthRad;
-                float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
-                float sweepAngle = (float)(bw * 180.0 / Math.PI);
-
-                using (Brush wedgeBrush = new SolidBrush(Color.FromArgb(80, Color.Lime)))
+                if (radar.OperationMode == AdvancedRadar.RadarOperationMode.AESA)
                 {
-                    g.FillPie(wedgeBrush,
+                    // In AESA mode, draw a distinct beam (here we use a hatch brush and cyan outline).
+                    double az = radar.CurrentAzimuth;
+                    double bw = radar.BeamWidthRad;
+                    float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
+                    float sweepAngle = (float)(bw * 180.0 / Math.PI);
+
+                    using (Brush wedgeBrush = new HatchBrush(HatchStyle.DarkUpwardDiagonal, Color.Cyan, Color.Transparent))
+                    {
+                        g.FillPie(wedgeBrush,
+                            -radarDisplayRadius, -radarDisplayRadius,
+                            radarDisplayRadius * 2, radarDisplayRadius * 2,
+                            startAngle, sweepAngle);
+                    }
+                    using (Pen aesaPen = new Pen(Color.Cyan, 2))
+                    {
+                        g.DrawPie(aesaPen,
+                            -radarDisplayRadius, -radarDisplayRadius,
+                            radarDisplayRadius * 2, radarDisplayRadius * 2,
+                            startAngle, sweepAngle);
+                    }
+                }
+                else
+                {
+                    // Mechanical mode: original drawing.
+                    double az = radar.CurrentAzimuth;
+                    double bw = radar.BeamWidthRad;
+                    float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
+                    float sweepAngle = (float)(bw * 180.0 / Math.PI);
+                    using (Brush wedgeBrush = new SolidBrush(Color.FromArgb(80, Color.Lime)))
+                    {
+                        g.FillPie(wedgeBrush,
+                            -radarDisplayRadius, -radarDisplayRadius,
+                            radarDisplayRadius * 2, radarDisplayRadius * 2,
+                            startAngle, sweepAngle);
+                    }
+                    g.DrawPie(sweepPen,
                         -radarDisplayRadius, -radarDisplayRadius,
                         radarDisplayRadius * 2, radarDisplayRadius * 2,
                         startAngle, sweepAngle);
                 }
-                g.DrawPie(sweepPen,
-                    -radarDisplayRadius, -radarDisplayRadius,
-                    radarDisplayRadius * 2, radarDisplayRadius * 2,
-                    startAngle, sweepAngle);
             }
             else
             {
-                // Ground radar: draw single sweep line.
+                // Ground radar: draw a single sweep line.
                 double beamAngle = engine.GetCurrentBeamAngle();
                 float x2 = (float)(radarDisplayRadius * Math.Cos(beamAngle));
                 float y2 = (float)(radarDisplayRadius * Math.Sin(beamAngle));

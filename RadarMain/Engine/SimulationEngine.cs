@@ -82,7 +82,6 @@ namespace RealRadarSim.Engine
 
         private void ConfigureFromLua(Table config)
         {
-            // Radar configuration.
             var radarDyn = config.Get("radar");
             if (radarDyn.Type == DataType.Table)
             {
@@ -118,7 +117,7 @@ namespace RealRadarSim.Engine
                 double lockRange = GetNumberOrDefault(radarTable, "lockRange", 50000.0);
                 double lockSNRThreshold_dB = GetNumberOrDefault(radarTable, "lockSNRThreshold_dB", 5.0);
 
-                // Path loss exponent in dB (e.g. 40 for 1/r^4)
+                // Path loss exponent in dB.
                 double pathLossExponent_dB = GetNumberOrDefault(radarTable, "pathLossExponent_dB", 40.0);
 
                 Radar = new AdvancedRadar(
@@ -147,6 +146,17 @@ namespace RealRadarSim.Engine
 
                 Radar.ShowAzimuthBars = showAzimuthBars;
                 Radar.ShowElevationBars = showElevationBars;
+
+                if (radarType.ToLower() == "aircraft")
+                {
+                    string opMode = radarTable.Get("operationMode").Type == DataType.String
+                        ? radarTable.Get("operationMode").String.ToLower()
+                        : "mechanical";
+                    if (opMode == "aesa")
+                        Radar.OperationMode = AdvancedRadar.RadarOperationMode.AESA;
+                    else
+                        Radar.OperationMode = AdvancedRadar.RadarOperationMode.Mechanical;
+                }
             }
             else
             {

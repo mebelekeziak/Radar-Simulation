@@ -5,9 +5,17 @@ using MathNet.Numerics.Distributions;
 using RealRadarSim.Logging;
 
 namespace RealRadarSim.Models
-{
+{ 
     public class AdvancedRadar
+
     {
+
+        public enum RadarOperationMode
+        {
+            Mechanical,
+            AESA
+        }
+
         public double MaxRange { get; private set; }
         public double BeamWidthRad { get; private set; }
 
@@ -58,6 +66,10 @@ namespace RealRadarSim.Models
 
         private int currentElevationBar;  // The active bar index
         private bool scanLeftToRight;
+
+        public RadarOperationMode OperationMode { get; set; } = RadarOperationMode.Mechanical;
+
+        private double aesaTime = 0.0;
 
         /// <summary>
         /// The current bar index for aircraft radar, for UI display.
@@ -122,14 +134,11 @@ namespace RealRadarSim.Models
             BeamWidthRad = beamWidthDeg * Math.PI / 180.0;
             rotationSpeedRadSec = rotationSpeedDegSec * Math.PI / 180.0;
             this.falseAlarmDensity = falseAlarmDensity;
-
-            // Store SNR parameters (all in dB)
             this.snr0_dB = snr0_dB;
             this.referenceRange = referenceRange;
             this.requiredSNR_dB = requiredSNR_dB;
             this.lockSNRThreshold_dB = lockSNRThreshold_dB;
             this.pathLossExponent_dB = pathLossExponent_dB;
-
             this.rangeNoiseBase = rangeNoiseBase;
             this.angleNoiseBase = angleNoiseBase;
             this.rng = rng;
@@ -141,7 +150,6 @@ namespace RealRadarSim.Models
             AntennaHeight = Math.Max(1, Math.Min(antennaHeight, 6));
             AntennaAzimuthScanDegrees = antennaAzimuthScanDeg;
             TiltOffsetDeg = tiltOffsetDeg;
-
             this.lockRange = lockRange;
 
             if (RadarType == "aircraft")
@@ -187,20 +195,35 @@ namespace RealRadarSim.Models
                 }
                 else
                 {
-                    double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
-                    CurrentAzimuth += dAz;
-
-                    if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
+                    if (OperationMode == RadarOperationMode.AESA)
                     {
-                        CurrentAzimuth = maxAzimuth;
-                        scanLeftToRight = false;
-                        AdvanceElevationBar();
+                        // In AESA mode, we simulate fast electronic scanning by updating the beam
+                        // over a full cycle (here, 2 seconds for the entire sector).
+                        aesaTime += dt;
+                        double scanCycleTime = 2.0; // seconds to complete a full scan cycle (parameterizable)
+                        double sectorWidth = maxAzimuth - minAzimuth;
+                        double phase = (aesaTime % scanCycleTime) / scanCycleTime;
+                        CurrentAzimuth = minAzimuth + phase * sectorWidth;
+                        // For simplicity, we set the elevation to the center of the available bars.
+                        CurrentElevation = (minElevation + maxElevation) / 2.0;
                     }
-                    else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
+                    else // Mechanical mode scanning.
                     {
-                        CurrentAzimuth = minAzimuth;
-                        scanLeftToRight = true;
-                        AdvanceElevationBar();
+                        double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
+                        CurrentAzimuth += dAz;
+
+                        if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
+                        {
+                            CurrentAzimuth = maxAzimuth;
+                            scanLeftToRight = false;
+                            AdvanceElevationBar();
+                        }
+                        else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
+                        {
+                            CurrentAzimuth = minAzimuth;
+                            scanLeftToRight = true;
+                            AdvanceElevationBar();
+                        }
                     }
                 }
             }
