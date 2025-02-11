@@ -12,9 +12,7 @@ using RealRadarSim.Models;
 using RealRadarSim.Tracking;
 
 namespace RealRadarSim.Forms
-
 {
-
     public partial class RadarForm : Form
     {
         private SimulationEngine engine;
@@ -27,8 +25,7 @@ namespace RealRadarSim.Forms
         private Pen crossPen = new Pen(Color.Green, 1);
         private Pen sweepPen = new Pen(Color.Lime, 2);
 
-        // These fonts and brushes will be used for drawing text and track details.
-        // The trackFont will be created from our embedded RobotoCondensed.ttf.
+        // Fonts and brushes for drawing text and track details.
         private Font trackFont;
         private Brush textBrush = new SolidBrush(Color.White);
         private Brush targetDetailBrush = new SolidBrush(Color.LimeGreen);
@@ -267,35 +264,72 @@ namespace RealRadarSim.Forms
             }
             g.DrawLine(crossPen, -radarDisplayRadius, 0, radarDisplayRadius, 0);
             g.DrawLine(crossPen, 0, -radarDisplayRadius, 0, radarDisplayRadius);
+
             var radar = engine.GetRadar();
             if (radar.RadarType.ToLower() == "aircraft")
             {
                 if (radar.OperationMode == AdvancedRadar.RadarOperationMode.AESA)
                 {
-                    // In AESA mode, draw a distinct beam (here we use a hatch brush and cyan outline).
-                    double az = radar.CurrentAzimuth;
-                    double bw = radar.BeamWidthRad;
-                    float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
-                    float sweepAngle = (float)(bw * 180.0 / Math.PI);
+                    // --- Multi-beam AESA drawing ---
+                    // These constants should match those used in AdvancedRadar.UpdateBeam.
+                    int azBeamCount = 6;
+                    int elBeamCount = 3;
+                    double dwellTime = 0.1;
+                    double totalCycleTime = dwellTime * azBeamCount * elBeamCount;
 
-                    using (Brush wedgeBrush = new HatchBrush(HatchStyle.DarkUpwardDiagonal, Color.Cyan, Color.Transparent))
+                    // Retrieve the radar’s accumulated AESA time.
+                    // (Ensure AdvancedRadar exposes a public property 'AesaTime'.)
+                    double aesaTime = radar.AesaTime;
+                    double localTime = aesaTime % totalCycleTime;
+                    int currentBeamIndex = (int)(localTime / dwellTime);
+
+                    // Calculate the azimuth grid using the radar’s min and max azimuth.
+                    double minAz = radar.MinAzimuth; // in radians
+                    double maxAz = radar.MaxAzimuth;
+                    double azSectorWidth = maxAz - minAz;
+                    double azStep = (azBeamCount > 1) ? azSectorWidth / (azBeamCount - 1) : 0;
+
+                    // Elevation parameters (not shown in top view but can be used for color modulation)
+                    double minElev = 0.0;
+                    double maxElev = Math.Atan2(10000.0, radar.ReferenceRange);
+                    double elevStep = (elBeamCount > 1) ? (maxElev - minElev) / (elBeamCount - 1) : 0;
+
+                    int beamCounter = 0;
+                    for (int elIndex = 0; elIndex < elBeamCount; elIndex++)
                     {
-                        g.FillPie(wedgeBrush,
-                            -radarDisplayRadius, -radarDisplayRadius,
-                            radarDisplayRadius * 2, radarDisplayRadius * 2,
-                            startAngle, sweepAngle);
-                    }
-                    using (Pen aesaPen = new Pen(Color.Cyan, 2))
-                    {
-                        g.DrawPie(aesaPen,
-                            -radarDisplayRadius, -radarDisplayRadius,
-                            radarDisplayRadius * 2, radarDisplayRadius * 2,
-                            startAngle, sweepAngle);
+                        for (int azIndex = 0; azIndex < azBeamCount; azIndex++)
+                        {
+                            // Calculate the center azimuth for this beam.
+                            double beamAz = minAz + azIndex * azStep;
+                            double beamWidth = radar.BeamWidthRad; // beam width in radians
+                            float startAngle = (float)((beamAz - beamWidth / 2.0) * 180.0 / Math.PI);
+                            float sweepAngle = (float)(beamWidth * 180.0 / Math.PI);
+
+                            // Highlight the active beam.
+                            Color beamColor = (beamCounter == currentBeamIndex)
+                                ? Color.Cyan
+                                : Color.FromArgb(100, Color.Cyan);
+
+                            using (Brush wedgeBrush = new HatchBrush(HatchStyle.DarkUpwardDiagonal, beamColor, Color.Transparent))
+                            {
+                                g.FillPie(wedgeBrush,
+                                    -radarDisplayRadius, -radarDisplayRadius,
+                                    radarDisplayRadius * 2, radarDisplayRadius * 2,
+                                    startAngle, sweepAngle);
+                            }
+                            using (Pen beamPen = new Pen(beamColor, beamCounter == currentBeamIndex ? 3 : 1))
+                            {
+                                g.DrawPie(beamPen,
+                                    -radarDisplayRadius, -radarDisplayRadius,
+                                    radarDisplayRadius * 2, radarDisplayRadius * 2,
+                                    startAngle, sweepAngle);
+                            }
+                            beamCounter++;
+                        }
                     }
                 }
-                else
+                else // Mechanical mode drawing.
                 {
-                    // Mechanical mode: original drawing.
                     double az = radar.CurrentAzimuth;
                     double bw = radar.BeamWidthRad;
                     float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
@@ -404,10 +438,8 @@ namespace RealRadarSim.Forms
                     TargetCT target = FindTargetByFlightName(trk.FlightName);
                     if (target != null)
                     {
-                        // Compute current range from the track state (using x, y, and z).
                         double z = trk.Filter.State[2];
                         double r = Math.Sqrt(x * x + y * y + z * z);
-                        // Get the radar parameters.
                         double snr_dB = radar.SNR0_dB
                                         + 10.0 * Math.Log10(target.RCS / radar.ReferenceRCS)
                                         + radar.PathLossExponent_dB * Math.Log10(radar.ReferenceRange / r);
@@ -415,11 +447,9 @@ namespace RealRadarSim.Forms
                     }
                 }
 
-                // Append SNR info to the track details.
                 string details = $"T{trk.TrackId} [{trk.FlightName}]\n" +
                                  $"P={trk.ExistenceProb:F2}, H={headingDeg:F0}°{snrInfo}";
 
-                // Check distance from mouse to track for hover effect.
                 float dx = (float)(tx - realMouseX);
                 float dy = (float)(ty - realMouseY);
                 float distPix = (float)Math.Sqrt(dx * dx + dy * dy);

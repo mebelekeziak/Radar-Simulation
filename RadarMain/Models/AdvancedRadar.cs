@@ -58,6 +58,9 @@ namespace RealRadarSim.Models
         public double ReferenceRange => referenceRange;
         public double PathLossExponent_dB => pathLossExponent_dB;
         public double ReferenceRCS => 1.0;
+        public double MinAzimuth => minAzimuth;
+        public double MaxAzimuth => maxAzimuth;
+        public double AesaTime => aesaTime;
 
         private double minAzimuth;
         private double maxAzimuth;
@@ -97,6 +100,8 @@ namespace RealRadarSim.Models
                 lockedTarget = target;
             }
         }
+
+
 
         public void UnlockTarget()
         {
@@ -189,23 +194,51 @@ namespace RealRadarSim.Models
         {
             if (RadarType == "aircraft")
             {
+                // If we do have a locked target, keep the classic STT-like logic
                 if (lockedTarget != null)
                 {
                     TrackLockedTarget(dt);
                 }
                 else
                 {
+                    // Multiple-beam logic for AESA
                     if (OperationMode == RadarOperationMode.AESA)
                     {
-                        // In AESA mode, we simulate fast electronic scanning by updating the beam
-                        // over a full cycle (here, 2 seconds for the entire sector).
                         aesaTime += dt;
-                        double scanCycleTime = 2.0; // seconds to complete a full scan cycle (parameterizable)
-                        double sectorWidth = maxAzimuth - minAzimuth;
-                        double phase = (aesaTime % scanCycleTime) / scanCycleTime;
-                        CurrentAzimuth = minAzimuth + phase * sectorWidth;
-                        // For simplicity, we set the elevation to the center of the available bars.
-                        CurrentElevation = (minElevation + maxElevation) / 2.0;
+                        int azBeamCount = 6;
+                        int elBeamCount = 3;
+                        double dwellTime = 0.1;
+                        double totalCycleTime = dwellTime * azBeamCount * elBeamCount;
+
+                        // Get fractional beam index
+                        double fractionalBeamIndex = (aesaTime % totalCycleTime) / dwellTime;
+                        int baseBeamIndex = (int)Math.Floor(fractionalBeamIndex);
+                        double interp = fractionalBeamIndex - baseBeamIndex;
+
+                        // Compute grid indices for the current beam cell
+                        int currentAzIndex = baseBeamIndex % azBeamCount;
+                        int currentElIndex = baseBeamIndex / azBeamCount;
+
+                        // And for the next beam cell (wrap around if needed)
+                        int nextBeamIndex = (baseBeamIndex + 1) % (azBeamCount * elBeamCount);
+                        int nextAzIndex = nextBeamIndex % azBeamCount;
+                        int nextElIndex = nextBeamIndex / azBeamCount;
+
+                        double azSectorWidth = maxAzimuth - minAzimuth;
+                        double azStep = (azBeamCount > 1) ? azSectorWidth / (azBeamCount - 1) : 0.0;
+                        double minElevAESA = 0.0;
+                        double maxElevAESA = Math.Atan2(10000.0, referenceRange);
+                        double elevRange = maxElevAESA - minElevAESA;
+                        double elStep = (elBeamCount > 1) ? elevRange / (elBeamCount - 1) : 0.0;
+
+                        // Interpolate azimuth and elevation between current and next beam positions
+                        double currentAz = minAzimuth + currentAzIndex * azStep;
+                        double nextAz = minAzimuth + nextAzIndex * azStep;
+                        CurrentAzimuth = currentAz + interp * (nextAz - currentAz);
+
+                        double currentEl = minElevAESA + currentElIndex * elStep;
+                        double nextEl = minElevAESA + nextElIndex * elStep;
+                        CurrentElevation = currentEl + interp * (nextEl - currentEl);
                     }
                     else // Mechanical mode scanning.
                     {
