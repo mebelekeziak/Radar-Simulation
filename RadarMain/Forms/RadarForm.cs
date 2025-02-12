@@ -265,70 +265,24 @@ namespace RealRadarSim.Forms
             g.DrawLine(crossPen, -radarDisplayRadius, 0, radarDisplayRadius, 0);
             g.DrawLine(crossPen, 0, -radarDisplayRadius, 0, radarDisplayRadius);
 
+            // Radar drawing.
             var radar = engine.GetRadar();
             if (radar.RadarType.ToLower() == "aircraft")
             {
                 if (radar.OperationMode == AdvancedRadar.RadarOperationMode.AESA)
                 {
-                    // --- Multi-beam AESA drawing ---
-                    // These constants should match those used in AdvancedRadar.UpdateBeam.
-                    int azBeamCount = 6;
-                    int elBeamCount = 3;
-                    double dwellTime = 0.1;
-                    double totalCycleTime = dwellTime * azBeamCount * elBeamCount;
-
-                    // Retrieve the radar’s accumulated AESA time.
-                    // (Ensure AdvancedRadar exposes a public property 'AesaTime'.)
-                    double aesaTime = radar.AesaTime;
-                    double localTime = aesaTime % totalCycleTime;
-                    int currentBeamIndex = (int)(localTime / dwellTime);
-
-                    // Calculate the azimuth grid using the radar’s min and max azimuth.
-                    double minAz = radar.MinAzimuth; // in radians
-                    double maxAz = radar.MaxAzimuth;
-                    double azSectorWidth = maxAz - minAz;
-                    double azStep = (azBeamCount > 1) ? azSectorWidth / (azBeamCount - 1) : 0;
-
-                    // Elevation parameters (not shown in top view but can be used for color modulation)
-                    double minElev = 0.0;
-                    double maxElev = Math.Atan2(10000.0, radar.ReferenceRange);
-                    double elevStep = (elBeamCount > 1) ? (maxElev - minElev) / (elBeamCount - 1) : 0;
-
-                    int beamCounter = 0;
-                    for (int elIndex = 0; elIndex < elBeamCount; elIndex++)
+                    // Instead of drawing each individual AESA beam, draw only the radar line-of-sight.
+                    var beams = radar.GetAesaBeams();
+                    int activeIndex = radar.GetCurrentAesaBeamIndex();
+                    if (beams.Count > 0)
                     {
-                        for (int azIndex = 0; azIndex < azBeamCount; azIndex++)
-                        {
-                            // Calculate the center azimuth for this beam.
-                            double beamAz = minAz + azIndex * azStep;
-                            double beamWidth = radar.BeamWidthRad; // beam width in radians
-                            float startAngle = (float)((beamAz - beamWidth / 2.0) * 180.0 / Math.PI);
-                            float sweepAngle = (float)(beamWidth * 180.0 / Math.PI);
-
-                            // Highlight the active beam.
-                            Color beamColor = (beamCounter == currentBeamIndex)
-                                ? Color.Cyan
-                                : Color.FromArgb(100, Color.Cyan);
-
-                            using (Brush wedgeBrush = new HatchBrush(HatchStyle.DarkUpwardDiagonal, beamColor, Color.Transparent))
-                            {
-                                g.FillPie(wedgeBrush,
-                                    -radarDisplayRadius, -radarDisplayRadius,
-                                    radarDisplayRadius * 2, radarDisplayRadius * 2,
-                                    startAngle, sweepAngle);
-                            }
-                            using (Pen beamPen = new Pen(beamColor, beamCounter == currentBeamIndex ? 3 : 1))
-                            {
-                                g.DrawPie(beamPen,
-                                    -radarDisplayRadius, -radarDisplayRadius,
-                                    radarDisplayRadius * 2, radarDisplayRadius * 2,
-                                    startAngle, sweepAngle);
-                            }
-                            beamCounter++;
-                        }
+                        double az = beams[activeIndex].azRad;
+                        float x2 = (float)(radarDisplayRadius * Math.Cos(az));
+                        float y2 = (float)(radarDisplayRadius * Math.Sin(az));
+                        g.DrawLine(sweepPen, 0, 0, x2, y2);
                     }
                 }
-                else // Mechanical mode drawing.
+                else // Mechanical bar scanning.
                 {
                     double az = radar.CurrentAzimuth;
                     double bw = radar.BeamWidthRad;
@@ -356,7 +310,7 @@ namespace RealRadarSim.Forms
                 g.DrawLine(sweepPen, 0, 0, x2, y2);
             }
 
-            // Draw elevation bars info (if enabled).
+            // Draw elevation bars info if enabled.
             if (radar.RadarType.ToLower() == "aircraft" && radar.ShowElevationBars)
             {
                 double barSpacingDeg = 2.0;
@@ -378,7 +332,7 @@ namespace RealRadarSim.Forms
                     barInfo += $" @ {rngM / 1000.0:F1} km: {altLow / 1000.0:F1}–{altHigh / 1000.0:F1} km\n";
                 }
 
-                // Reset transform to draw the text in screen coordinates.
+                // Reset transform to draw text in screen coordinates.
                 g.ResetTransform();
                 g.DrawString(barInfo, trackFont, textBrush, this.ClientSize.Width - 230, 20);
                 g.TranslateTransform(cx, cy);
