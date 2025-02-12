@@ -8,6 +8,13 @@ namespace RealRadarSim.Models
 {
     public class AdvancedRadar
     {
+
+        public enum RadarOperationMode
+        {
+            Mechanical,
+            AESA
+        }
+
         public double MaxRange { get; private set; }
         public double BeamWidthRad { get; private set; }
 
@@ -147,6 +154,11 @@ namespace RealRadarSim.Models
             if (RadarType == "aircraft")
             {
                 InitializeAircraftMode();
+                // If AESA mode is selected, initialize the grid of active beams.
+                if (OperationMode == RadarOperationMode.AESA)
+                {
+                    InitializeAesaBeams();
+                }
             }
             else
             {
@@ -174,9 +186,67 @@ namespace RealRadarSim.Models
             scanLeftToRight = true;
         }
 
+        // Initialize the AESA beams by creating a grid over the azimuth and elevation sectors.
+        private void InitializeAesaBeams()
+        {
+            activeBeams.Clear();
+            double azSectorWidth = maxAzimuth - minAzimuth;
+            double azStep = (azBeamCount > 1) ? azSectorWidth / (azBeamCount - 1) : 0.0;
+            double minElevAESA = 0.0;
+            double maxElevAESA = Math.Atan2(10000.0, referenceRange);
+            double elevStep = (elBeamCount > 1) ? (maxElevAESA - minElevAESA) / (elBeamCount - 1) : 0.0;
+            for (int i = 0; i < elBeamCount; i++)
+            {
+                for (int j = 0; j < azBeamCount; j++)
+                {
+                    Beam beam = new Beam
+                    {
+                        Azimuth = minAzimuth + j * azStep,
+                        Elevation = minElevAESA + i * elevStep,
+                        DwellTime = baseDwellTime,
+                        TimeSinceLastUpdate = 0.0,
+                        DetectionCount = 0
+                    };
+                    activeBeams.Add(beam);
+                }
+            }
+        }
+
         // ================================
         // MAIN UPDATE
         // ================================
+
+        private void UpdateAesaBeams(double dt)
+        {
+            foreach (var beam in activeBeams)
+            {
+                beam.TimeSinceLastUpdate += dt;
+                if (beam.TimeSinceLastUpdate >= beam.DwellTime)
+                {
+                    // Adaptive scheduling: if the beam registered any detections, extend its dwell time.
+                    if (beam.DetectionCount > 0)
+                    {
+                        beam.DwellTime = baseDwellTime * (1 + 0.5 * beam.DetectionCount);
+                    }
+                    else
+                    {
+                        // No detections – use the base dwell time and update the beam direction to scan the sector.
+                        beam.DwellTime = baseDwellTime;
+                        beam.Azimuth += 0.1; // shift beam direction (example increment)
+                        if (beam.Azimuth > maxAzimuth)
+                            beam.Azimuth = minAzimuth;
+                    }
+                    beam.TimeSinceLastUpdate = 0.0;
+                    beam.DetectionCount = 0;
+                }
+            }
+            // Optionally, update overall radar beam pointers (e.g. for display) using the first beam.
+            if (activeBeams.Count > 0)
+            {
+                CurrentAzimuth = activeBeams[0].Azimuth;
+                CurrentElevation = activeBeams[0].Elevation;
+            }
+        }
         public void UpdateBeam(double dt)
         {
             if (RadarType == "aircraft")
@@ -187,20 +257,62 @@ namespace RealRadarSim.Models
                 }
                 else
                 {
-                    double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
-                    CurrentAzimuth += dAz;
+                    // Multiple-beam logic for AESA
+                    if (OperationMode == RadarOperationMode.AESA)
+                    {
+                        aesaTime += dt;
+                        int azBeamCount = 6;
+                        int elBeamCount = 3;
+                        double dwellTime = 0.1;
+                        double totalCycleTime = dwellTime * azBeamCount * elBeamCount;
 
-                    if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
-                    {
-                        CurrentAzimuth = maxAzimuth;
-                        scanLeftToRight = false;
-                        AdvanceElevationBar();
+                        // Get fractional beam index
+                        double fractionalBeamIndex = (aesaTime % totalCycleTime) / dwellTime;
+                        int baseBeamIndex = (int)Math.Floor(fractionalBeamIndex);
+                        double interp = fractionalBeamIndex - baseBeamIndex;
+
+                        // Compute grid indices for the current beam cell
+                        int currentAzIndex = baseBeamIndex % azBeamCount;
+                        int currentElIndex = baseBeamIndex / azBeamCount;
+
+                        // And for the next beam cell (wrap around if needed)
+                        int nextBeamIndex = (baseBeamIndex + 1) % (azBeamCount * elBeamCount);
+                        int nextAzIndex = nextBeamIndex % azBeamCount;
+                        int nextElIndex = nextBeamIndex / azBeamCount;
+
+                        double azSectorWidth = maxAzimuth - minAzimuth;
+                        double azStep = (azBeamCount > 1) ? azSectorWidth / (azBeamCount - 1) : 0.0;
+                        double minElevAESA = 0.0;
+                        double maxElevAESA = Math.Atan2(10000.0, referenceRange);
+                        double elevRange = maxElevAESA - minElevAESA;
+                        double elStep = (elBeamCount > 1) ? elevRange / (elBeamCount - 1) : 0.0;
+
+                        // Interpolate azimuth and elevation between current and next beam positions
+                        double currentAz = minAzimuth + currentAzIndex * azStep;
+                        double nextAz = minAzimuth + nextAzIndex * azStep;
+                        CurrentAzimuth = currentAz + interp * (nextAz - currentAz);
+
+                        double currentEl = minElevAESA + currentElIndex * elStep;
+                        double nextEl = minElevAESA + nextElIndex * elStep;
+                        CurrentElevation = currentEl + interp * (nextEl - currentEl);
                     }
-                    else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
+                    else // Mechanical mode scanning.
                     {
-                        CurrentAzimuth = minAzimuth;
-                        scanLeftToRight = true;
-                        AdvanceElevationBar();
+                        double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
+                        CurrentAzimuth += dAz;
+
+                        if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
+                        {
+                            CurrentAzimuth = maxAzimuth;
+                            scanLeftToRight = false;
+                            AdvanceElevationBar();
+                        }
+                        else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
+                        {
+                            CurrentAzimuth = minAzimuth;
+                            scanLeftToRight = true;
+                            AdvanceElevationBar();
+                        }
                     }
                 }
             }
@@ -333,15 +445,11 @@ namespace RealRadarSim.Models
             double z = tgt.State[2];
             double r = Math.Sqrt(x * x + y * y + z * z);
             if (r > MaxRange) return null;
-
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
-
-            // Determine an effective beam width (which widens at short ranges).
             double nominalBeamWidth = BeamWidthRad;
             double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0;
             double effectiveBeamWidth = nominalBeamWidth;
-
             if (r < referenceRange)
             {
                 effectiveBeamWidth = nominalBeamWidth * (referenceRange / r);
@@ -349,41 +457,46 @@ namespace RealRadarSim.Models
                     effectiveBeamWidth = maxEffectiveBeamWidth;
             }
 
-            // Check whether the target falls within the current beam.
-            if (RadarType == "aircraft")
+            bool targetDetected = false;
+            if (OperationMode == RadarOperationMode.AESA)
+            {
+                // Check if the target falls within any active beam.
+                foreach (var beam in activeBeams)
+                {
+                    double diffAz = Math.Abs(NormalizeAngle(az - beam.Azimuth));
+                    // Use effectiveBeamWidth for azimuth; for elevation, assume a fixed half-width (e.g., 1° in radians)
+                    double barHalfRad = (2.0 * Math.PI / 180.0) * 0.5;
+                    double diffEl = Math.Abs(NormalizeAngle(el - beam.Elevation));
+                    if (diffAz <= effectiveBeamWidth * 0.5 && diffEl <= barHalfRad)
+                    {
+                        targetDetected = true;
+                        beam.DetectionCount++;
+                        break;
+                    }
+                }
+                if (!targetDetected) return null;
+            }
+            else
             {
                 double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
                 if (diffAz > effectiveBeamWidth * 0.5) return null;
-
                 const double singleBarDeg = 2.0;
                 double barHalfRad = (singleBarDeg * Math.PI / 180.0) * 0.5;
                 double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
                 if (diffEl > barHalfRad) return null;
             }
-            else
-            {
-                double diffBeam = Math.Abs(NormalizeAngle(az - CurrentBeamAngle));
-                if (diffBeam > effectiveBeamWidth * 0.5) return null;
-            }
 
-            // Compute SNR in dB. Here we use the 1/r² model (i.e. pathLossExponent_dB) for measurement generation.
             double snr_dB = snr0_dB
                 + 10.0 * Math.Log10(tgt.RCS / referenceRCS)
                 + pathLossExponent_dB * Math.Log10(referenceRange / r);
-
             if (snr_dB < requiredSNR_dB) return null;
-
-            // Convert SNR from dB to linear amplitude.
             double snr_linear = Math.Pow(10.0, snr_dB / 10.0);
-            // Adjust for beam widening.
             snr_linear *= (nominalBeamWidth / effectiveBeamWidth);
-
             double rMeas = r + Normal.Sample(rng, 0, rangeNoiseBase);
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = az + Normal.Sample(rng, 0, angleNoiseBase);
             double elMeas = el + Normal.Sample(rng, 0, angleNoiseBase);
             double amp = snr_linear + Normal.Sample(rng, 0, 0.05 * snr_linear);
-
             var measurement = new Measurement
             {
                 Range = rMeas,
@@ -391,7 +504,6 @@ namespace RealRadarSim.Models
                 Elevation = NormalizeAngle(elMeas),
                 Amplitude = amp
             };
-
             DebugLogger.LogMeasurement($"Generated target measurement: Range = {measurement.Range:F2}, Azimuth = {measurement.Azimuth:F2}, Elevation = {measurement.Elevation:F2}, Amplitude = {measurement.Amplitude:F2}");
             return measurement;
         }
