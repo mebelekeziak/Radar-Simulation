@@ -271,16 +271,11 @@ namespace RealRadarSim.Forms
             {
                 if (radar.OperationMode == AdvancedRadar.RadarOperationMode.AESA)
                 {
-                    // Instead of drawing each individual AESA beam, draw only the radar line-of-sight.
-                    var beams = radar.GetAesaBeams();
-                    int activeIndex = radar.GetCurrentAesaBeamIndex();
-                    if (beams.Count > 0)
-                    {
-                        double az = beams[activeIndex].azRad;
-                        float x2 = (float)(radarDisplayRadius * Math.Cos(az));
-                        float y2 = (float)(radarDisplayRadius * Math.Sin(az));
-                        g.DrawLine(sweepPen, 0, 0, x2, y2);
-                    }
+                    // For AESA mode, simply draw the radar line-of-sight using the current azimuth.
+                    double az = radar.CurrentAzimuth;
+                    float x2 = (float)(radarDisplayRadius * Math.Cos(az));
+                    float y2 = (float)(radarDisplayRadius * Math.Sin(az));
+                    g.DrawLine(sweepPen, 0, 0, x2, y2);
                 }
                 else // Mechanical bar scanning.
                 {

@@ -107,9 +107,8 @@ namespace RealRadarSim.Models
         public bool IsLocked => (lockedTarget != null);
         private double lockRange = 50000.0;
 
-        // Replaced auto-property with backing field implementation.
+        // Radar operation mode with backing field.
         private RadarOperationMode operationMode = RadarOperationMode.Mechanical;
-
         public RadarOperationMode OperationMode
         {
             get { return operationMode; }
@@ -118,14 +117,10 @@ namespace RealRadarSim.Models
                 if (operationMode != value)
                 {
                     operationMode = value;
-
-                    // When switching to AESA mode and if the radar type is "aircraft",
-                    // initialize the AESA beams.
                     if (RadarType.ToLower() == "aircraft" && operationMode == RadarOperationMode.AESA)
                     {
                         InitializeAesaSearchBeams();
                     }
-                    // Optionally, if switching away from AESA, you might clear the beams:
                     else if (RadarType.ToLower() == "aircraft" && operationMode != RadarOperationMode.AESA)
                     {
                         searchBeams.Clear();
@@ -134,16 +129,20 @@ namespace RealRadarSim.Models
             }
         }
 
+        // -------------------------------------------------
+        // New field: EKF for AESA tracking (separate from STT)
+        // -------------------------------------------------
+        private RealRadarSim.Tracking.ManeuveringEKF aesaTargetFilter = null;
+
         // ------------------------------
         // Public API
         // ------------------------------
-
         public void LockTarget(TargetCT target)
         {
             if (RadarType == "aircraft")
             {
                 lockedTarget = target;
-                // Optionally create/enable a track beam if in AESA mode:
+                // STT logic remains for mechanical mode.
                 if (OperationMode == RadarOperationMode.AESA)
                 {
                     CreateOrUpdateTrackBeam(lockedTarget);
@@ -155,7 +154,8 @@ namespace RealRadarSim.Models
         {
             lockedTarget = null;
             trackBeam = null;
-            currentAesaBeamIndex = 0; // Reset the index to ensure it’s within bounds.
+            currentAesaBeamIndex = 0;
+            aesaTargetFilter = null;
         }
 
         // ------------------------------
@@ -221,14 +221,12 @@ namespace RealRadarSim.Models
             }
             else
             {
-                // Ground-based: mechanical 360-scan
                 CurrentBeamAngle = 0.0;
             }
         }
 
         private void InitializeAircraftMode()
         {
-            // For mechanical bars
             double barSpacingDeg = 2.0;
             double barSpacingRad = barSpacingDeg * Math.PI / 180.0;
             double tiltOffsetRad = TiltOffsetDeg * Math.PI / 180.0;
@@ -254,8 +252,6 @@ namespace RealRadarSim.Models
             double azSectorWidth = maxAzimuth - minAzimuth;
             double azStep = (azBeamCount > 1) ? azSectorWidth / (azBeamCount - 1) : 0.0;
 
-            // Example: we define elevation from 0 up to some max (say 10,000m vs. referenceRange).
-            // You can also parametrize this if you want more bars.
             double minElevAESA = 0.0;
             double maxElevAESA = Math.Atan2(10000.0, referenceRange);
             double elevStep = (elBeamCount > 1) ? (maxElevAESA - minElevAESA) / (elBeamCount - 1) : 0.0;
@@ -280,7 +276,6 @@ namespace RealRadarSim.Models
 
         private void CreateOrUpdateTrackBeam(TargetCT t)
         {
-            // If locked, we define a single "track" beam that points at target’s direction.
             if (t == null) return;
 
             if (trackBeam == null)
@@ -289,7 +284,7 @@ namespace RealRadarSim.Models
                 {
                     Azimuth = 0.0,
                     Elevation = 0.0,
-                    DwellTime = baseDwellTime, // can tune for tracking
+                    DwellTime = baseDwellTime,
                     DetectionCount = 0,
                     IsTrackBeam = true
                 };
@@ -305,12 +300,10 @@ namespace RealRadarSim.Models
             {
                 if (lockedTarget != null)
                 {
-                    // If locked, do STT-like behavior or track logic
                     TrackLockedTarget(dt);
                 }
                 else
                 {
-                    // If not locked, proceed with normal scanning
                     if (OperationMode == RadarOperationMode.AESA)
                     {
                         UpdateAesaBeams(dt);
@@ -336,7 +329,6 @@ namespace RealRadarSim.Models
             }
             else
             {
-                // Ground radar rotates continuously
                 CurrentBeamAngle += rotationSpeedRadSec * dt;
                 if (CurrentBeamAngle > 2 * Math.PI)
                     CurrentBeamAngle -= 2 * Math.PI;
@@ -355,82 +347,55 @@ namespace RealRadarSim.Models
         }
 
         // ------------------------------
-        // AESA Scheduling
+        // AESA Scheduling with EKF integration for target prediction
         // ------------------------------
         private void UpdateAesaBeams(double dt)
         {
-            // 1) Increment total AESA time.
             aesaTime += dt;
 
-            // 2) Update track beam if locked.
             if (lockedTarget != null && trackBeam != null)
             {
-                double x = lockedTarget.State[0];
-                double y = lockedTarget.State[1];
-                double z = lockedTarget.State[2];
+                if (aesaTargetFilter == null)
+                {
+                    var initState = MathNet.Numerics.LinearAlgebra.Double.DenseVector.OfArray(
+                        new double[] { lockedTarget.State[0], lockedTarget.State[1], lockedTarget.State[2],
+                                       0, 0, 0, 0, 0, 0 });
+                    var initCov = MathNet.Numerics.LinearAlgebra.Double.DenseMatrix.CreateIdentity(9) * 100;
+                    aesaTargetFilter = new RealRadarSim.Tracking.ManeuveringEKF(initState, initCov, 1.0);
+                }
+                aesaTargetFilter.Predict(dt);
+                double x = aesaTargetFilter.State[0];
+                double y = aesaTargetFilter.State[1];
+                double z = aesaTargetFilter.State[2];
                 trackBeam.Azimuth = Math.Atan2(y, x);
                 trackBeam.Elevation = Math.Atan2(z, Math.Sqrt(x * x + y * y));
             }
 
-            // 3) Build the combined list of beams.
             var allBeams = new List<Beam>();
             allBeams.AddRange(searchBeams);
             if (trackBeam != null)
                 allBeams.Add(trackBeam);
 
-            // Safeguard: if there are no beams, exit.
             if (allBeams.Count == 0)
                 return;
 
-            // Ensure currentAesaBeamIndex is within bounds.
             currentAesaBeamIndex %= allBeams.Count;
-
-            // 4) Compute the new active beam index.
             double totalCycleTime = baseDwellTime * allBeams.Count;
             double localTime = aesaTime % totalCycleTime;
             int newIndex = (int)(localTime / baseDwellTime);
 
             if (newIndex != currentAesaBeamIndex)
             {
-                // Reset the previous beam’s counters.
                 allBeams[currentAesaBeamIndex].DetectionCount = 0;
                 allBeams[currentAesaBeamIndex].TimeSinceLastUpdate = 0.0;
-
                 currentAesaBeamIndex = newIndex;
             }
 
-            // 5) Set the active beam’s angles.
             Beam active = allBeams[currentAesaBeamIndex];
             CurrentAzimuth = active.Azimuth;
             CurrentElevation = active.Elevation;
         }
 
-
-        public int GetCurrentAesaBeamIndex()
-        {
-            return currentAesaBeamIndex;
-        }
-
-        /// <summary>
-        /// Returns the list of beams (for UI display): the first "searchBeams" in order, plus
-        /// the trackBeam if any. The index of the active beam is <see cref="GetCurrentAesaBeamIndex"/>.
-        /// </summary>
-        public List<(double azRad, bool isTrack)> GetAesaBeams()
-        {
-            // Return them in the same order used by UpdateAesaBeams
-            var list = searchBeams
-                .Select(b => (b.Azimuth, b.IsTrackBeam))
-                .ToList();
-            if (trackBeam != null)
-            {
-                list.Add((trackBeam.Azimuth, trackBeam.IsTrackBeam));
-            }
-            return list;
-        }
-
-        // ------------------------------
-        // Track-locked target logic
-        // ------------------------------
         private void TrackLockedTarget(double dt)
         {
             double x = lockedTarget.State[0];
@@ -444,12 +409,10 @@ namespace RealRadarSim.Models
 
             if (r > lockRange || snr_dB < lockSNRThreshold_dB)
             {
-                // Lost lock
                 UnlockTarget();
                 return;
             }
 
-            // For mechanical scanning track, we just smoothly steer the antenna:
             if (OperationMode == RadarOperationMode.Mechanical)
             {
                 double desiredAz = Math.Atan2(y, x);
@@ -471,8 +434,7 @@ namespace RealRadarSim.Models
             }
             else
             {
-                // In AESA mode, we rely on the trackBeam approach in UpdateAesaBeams.
-                // So do nothing special here.
+                // In AESA mode, the track beam is updated in UpdateAesaBeams using EKF.
             }
         }
 
@@ -491,7 +453,6 @@ namespace RealRadarSim.Models
             var rawMeas = new List<Measurement>();
 
             int targetMeasurementCount = 0;
-            // Generate target returns
             foreach (var tgt in targets)
             {
                 var m = GenerateTargetMeasurement(tgt);
@@ -503,7 +464,6 @@ namespace RealRadarSim.Models
             }
             DebugLogger.LogMeasurement($"Generated {targetMeasurementCount} target measurements.");
 
-            // Generate false alarms
             double sectorArea = 0.5 * BeamWidthRad * MaxRange * MaxRange;
             double lambda = falseAlarmDensity * sectorArea;
             int numFalse = Poisson.Sample(rng, lambda);
@@ -512,7 +472,6 @@ namespace RealRadarSim.Models
                 rawMeas.Add(GenerateFalseAlarm());
             }
 
-            // Apply CFAR filtering and clustering
             var cfarDetections = CFARFilterMeasurements(rawMeas);
             DebugLogger.LogCFAR($"CFAR Filter: {cfarDetections.Count} detections passed out of {rawMeas.Count} raw measurements.");
             return MergeCloseDetections(cfarDetections, ClusterDistanceMeters);
@@ -529,7 +488,6 @@ namespace RealRadarSim.Models
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
 
-            // Effective beam width for closer targets, etc.
             double nominalBeamWidth = BeamWidthRad;
             double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0;
             double effectiveBeamWidth = nominalBeamWidth;
@@ -543,10 +501,6 @@ namespace RealRadarSim.Models
             bool targetDetected = false;
             if (OperationMode == RadarOperationMode.AESA)
             {
-                // Check if within the "active" AESA beam for the current moment or any beam
-                // Because we do time multiplexing, only the "active beam" matters at any instant.
-                // But to keep it simpler, we check if target is in any of the beams in the grid.
-                // This is a simplification for demonstration.
                 var allBeams = new List<Beam>(searchBeams);
                 if (trackBeam != null) allBeams.Add(trackBeam);
 
@@ -566,7 +520,6 @@ namespace RealRadarSim.Models
             }
             else
             {
-                // Mechanical: compare to CurrentAzimuth/CurrentElevation
                 double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
                 if (diffAz > effectiveBeamWidth * 0.5) return null;
 
@@ -576,14 +529,12 @@ namespace RealRadarSim.Models
                 if (diffEl > barHalfRad) return null;
             }
 
-            // Check SNR
             double snr_dB = snr0_dB
                 + 10.0 * Math.Log10(tgt.RCS / ReferenceRCS)
                 + pathLossExponent_dB * Math.Log10(referenceRange / r);
 
             if (snr_dB < requiredSNR_dB) return null;
 
-            // Convert to linear, scale by ratio of nominal/effective beam
             double snr_linear = Math.Pow(10.0, snr_dB / 10.0);
             snr_linear *= (nominalBeamWidth / effectiveBeamWidth);
 
@@ -601,6 +552,15 @@ namespace RealRadarSim.Models
                 Amplitude = amp
             };
             DebugLogger.LogMeasurement($"Generated target measurement: Range={measurement.Range:F2}, Az={measurement.Azimuth:F2}, El={measurement.Elevation:F2}, Amp={measurement.Amplitude:F2}");
+
+            // Update AESA-specific EKF if this measurement is from the locked target.
+            if (tgt == lockedTarget && aesaTargetFilter != null)
+            {
+                var zVector = MathNet.Numerics.LinearAlgebra.Double.DenseVector.OfArray(
+                    new double[] { measurement.Range, measurement.Azimuth, measurement.Elevation });
+                aesaTargetFilter.Update(zVector);
+            }
+
             return measurement;
         }
 
