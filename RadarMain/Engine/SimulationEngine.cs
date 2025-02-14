@@ -152,11 +152,9 @@ namespace RealRadarSim.Engine
                     string opMode = radarTable.Get("operationMode").Type == DataType.String
                         ? radarTable.Get("operationMode").String.ToLower()
                         : "mechanical";
-                    if (opMode == "aesa")
-                        Radar.OperationMode = AdvancedRadar.RadarOperationMode.AESA;
-                    else
-                        Radar.OperationMode = AdvancedRadar.RadarOperationMode.Mechanical;
+                    Radar.UseAesaMode = (opMode == "aesa");
                 }
+
             }
             else
             {
