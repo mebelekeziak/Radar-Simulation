@@ -62,11 +62,14 @@ namespace RealRadarSim.Models
         public int CurrentElevationBar => currentElevationBar;
 
         private bool scanLeftToRight;
-        private bool aesaScanLeftToRight = true;
+        private double lockRange = 50000.0;
 
-        // AESA mode parameters.
+        // AESA mode flag.
         public bool UseAesaMode { get; set; } = false;
-        private double aesaTime = 0.0;
+
+        // New AESA mode properties.
+        public int ConcurrentAesaBeams { get; set; } = 12;
+        public List<AesaBeam> AesaBeams { get; private set; }
         private double aesaElevationOscFreq = 0.1; // Hz
 
         public double BeamSpeedMultiplier { get; set; } = 5.0;
@@ -74,7 +77,43 @@ namespace RealRadarSim.Models
         // LOCK-RELATED FIELDS
         private JPDA_Track lockedTrack = null;
         public bool IsLocked => (lockedTrack != null);
-        private double lockRange = 50000.0;
+
+        // Nested class representing a single AESA beam.
+        public class AesaBeam
+        {
+            public double CurrentAzimuth; // in radians (clamped between -70° and 70°)
+            public double CurrentElevation; // in radians
+            private double azPhase;
+            private double elPhase;
+
+            public AesaBeam(double initialAz, double initialEl, double initialAzPhase, double initialElPhase)
+            {
+                CurrentAzimuth = initialAz;
+                CurrentElevation = initialEl;
+                azPhase = initialAzPhase;
+                elPhase = initialElPhase;
+            }
+
+            public void Update(double dt, double rotationSpeed, double elevationOscFreq)
+            {
+                azPhase += rotationSpeed * dt;
+                elPhase += 2 * Math.PI * elevationOscFreq * dt;
+
+                // Oscillate azimuth between -70° and 70°
+                double minAz = -70.0 * Math.PI / 180.0;
+                double maxAz = 70.0 * Math.PI / 180.0;
+                double midAz = (minAz + maxAz) / 2.0;
+                double ampAz = (maxAz - minAz) / 2.0;
+                CurrentAzimuth = midAz + ampAz * Math.Sin(azPhase);
+
+                // Oscillate elevation between -15° and 15°
+                double minEl = -15.0 * Math.PI / 180.0;
+                double maxEl = 15.0 * Math.PI / 180.0;
+                double midEl = (minEl + maxEl) / 2.0;
+                double ampEl = (maxEl - minEl) / 2.0;
+                CurrentElevation = midEl + ampEl * Math.Sin(elPhase);
+            }
+        }
 
         public AdvancedRadar(
             double maxRange,
@@ -125,6 +164,24 @@ namespace RealRadarSim.Models
             this.lockRange = lockRange;
 
             InitializeAircraftMode();
+
+            // Initialize AESA beams if in AESA mode.
+            if (RadarType == "aircraft" && UseAesaMode)
+            {
+                AesaBeams = new List<AesaBeam>();
+                for (int i = 0; i < ConcurrentAesaBeams; i++)
+                {
+                    double initialAzPhase = (2 * Math.PI / ConcurrentAesaBeams) * i;
+                    double initialElPhase = (2 * Math.PI / ConcurrentAesaBeams) * i;
+                    double minAz = -70.0 * Math.PI / 180.0;
+                    double maxAz = 70.0 * Math.PI / 180.0;
+                    double midAz = (minAz + maxAz) / 2.0;
+                    double minEl = -15.0 * Math.PI / 180.0;
+                    double maxEl = 15.0 * Math.PI / 180.0;
+                    double midEl = (minEl + maxEl) / 2.0;
+                    AesaBeams.Add(new AesaBeam(midAz, midEl, initialAzPhase, initialElPhase));
+                }
+            }
         }
 
         private void InitializeAircraftMode()
@@ -166,7 +223,7 @@ namespace RealRadarSim.Models
 
             if (RadarType == "aircraft")
             {
-                // Prioritize tracking a locked target regardless of the scanning mode.
+                // Prioritize tracking a locked target.
                 if (lockedTrack != null)
                 {
                     TrackLockedTrack(dt);
@@ -175,33 +232,14 @@ namespace RealRadarSim.Models
 
                 if (UseAesaMode)
                 {
-                    aesaTime += dt;
-                    double halfAesaRad = (AntennaAzimuthScanDegrees / 2.0) * Math.PI / 180.0;
-                    double aesaMinAz = -halfAesaRad;
-                    double aesaMaxAz = halfAesaRad;
-
-                    if (aesaScanLeftToRight)
+                    // Update each AESA beam.
+                    if (AesaBeams != null)
                     {
-                        CurrentAzimuth += rotationSpeedRadSec * effectiveMultiplier * dt;
-                        if (CurrentAzimuth >= aesaMaxAz)
+                        foreach (var beam in AesaBeams)
                         {
-                            CurrentAzimuth = aesaMaxAz;
-                            aesaScanLeftToRight = false;
+                            beam.Update(dt, rotationSpeedRadSec * effectiveMultiplier, aesaElevationOscFreq);
                         }
                     }
-                    else
-                    {
-                        CurrentAzimuth -= rotationSpeedRadSec * effectiveMultiplier * dt;
-                        if (CurrentAzimuth <= aesaMinAz)
-                        {
-                            CurrentAzimuth = aesaMinAz;
-                            aesaScanLeftToRight = true;
-                        }
-                    }
-
-                    double aesaMinEl = -15.0 * Math.PI / 180.0;
-                    double aesaMaxEl = 15.0 * Math.PI / 180.0;
-                    CurrentElevation = aesaMinEl + (aesaMaxEl - aesaMinEl) * 0.5 * (1 + Math.Sin(2 * Math.PI * aesaElevationOscFreq * aesaTime));
                 }
                 else
                 {
@@ -230,7 +268,6 @@ namespace RealRadarSim.Models
             }
         }
 
-
         private void AdvanceElevationBar()
         {
             currentElevationBar++;
@@ -244,20 +281,17 @@ namespace RealRadarSim.Models
 
         private void TrackLockedTrack(double dt)
         {
-            // Retrieve the position from the track's filter state.
             double x = lockedTrack.Filter.State[0];
             double y = lockedTrack.Filter.State[1];
             double z = lockedTrack.Filter.State[2];
             double r = Math.Sqrt(x * x + y * y + z * z);
 
-            // Only check if the target is within lock range.
             if (r > lockRange)
             {
                 UnlockTarget();
                 return;
             }
 
-            // Compute desired azimuth and elevation based on the track's position.
             double desiredAz = Math.Atan2(y, x);
             double desiredEl = Math.Atan2(z, Math.Sqrt(x * x + y * y));
             double maxAngularStep = rotationSpeedRadSec * dt;
@@ -276,7 +310,6 @@ namespace RealRadarSim.Models
                 CurrentElevation = desiredEl;
             CurrentElevation = NormalizeAngle(CurrentElevation);
         }
-
 
         public List<Measurement> GetMeasurements(List<TargetCT> targets)
         {
@@ -329,11 +362,25 @@ namespace RealRadarSim.Models
             {
                 if (UseAesaMode)
                 {
-                    double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
-                    if (diffAz > effectiveBeamWidth * 0.5) return null;
-                    double effectiveElevationWidth = effectiveBeamWidth * 2.0;
-                    double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
-                    if (diffEl > effectiveElevationWidth * 0.5) return null;
+                    bool inAnyBeam = false;
+                    if (AesaBeams != null)
+                    {
+                        foreach (var beam in AesaBeams)
+                        {
+                            double diffAz = Math.Abs(NormalizeAngle(az - beam.CurrentAzimuth));
+                            if (diffAz <= effectiveBeamWidth * 0.5)
+                            {
+                                double effectiveElevationWidth = effectiveBeamWidth * 2.0;
+                                double diffEl = Math.Abs(NormalizeAngle(el - beam.CurrentElevation));
+                                if (diffEl <= effectiveElevationWidth * 0.5)
+                                {
+                                    inAnyBeam = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!inAnyBeam) return null;
                 }
                 else
                 {
@@ -384,7 +431,16 @@ namespace RealRadarSim.Models
             double u = rng.NextDouble();
             double rFA = MaxRange * Math.Sqrt(u);
             double halfBeam = BeamWidthRad * 0.5;
-            double mainAz = (RadarType == "aircraft") ? CurrentAzimuth : CurrentBeamAngle;
+            double mainAz;
+            if (RadarType == "aircraft" && UseAesaMode && AesaBeams != null && AesaBeams.Count > 0)
+            {
+                int idx = rng.Next(AesaBeams.Count);
+                mainAz = AesaBeams[idx].CurrentAzimuth;
+            }
+            else
+            {
+                mainAz = (RadarType == "aircraft") ? CurrentAzimuth : CurrentBeamAngle;
+            }
             double azFA = NormalizeAngle(mainAz + (rng.NextDouble() * BeamWidthRad - halfBeam));
             double elCenter = (RadarType == "aircraft") ? CurrentElevation : 0.0;
             double elFA = elCenter + Normal.Sample(rng, 0, angleNoiseBase * 2);
