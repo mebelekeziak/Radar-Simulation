@@ -143,17 +143,9 @@ namespace RealRadarSim.Forms
                     var radar = engine.GetRadar();
                     if (radar.RadarType.ToLower() == "aircraft")
                     {
-                        // Instead of building a synthetic target, look up the actual TargetCT instance.
-                        TargetCT actualTarget = FindTargetByFlightName(hoveredTrack.FlightName);
-                        if (actualTarget != null)
-                        {
-                            radar.LockTarget(actualTarget);
-                            Console.WriteLine($"[RadarForm] Locked trackID={hoveredTrack.TrackId}, P={hoveredTrack.ExistenceProb:F2}");
-                        }
-                        else
-                        {
-                            Console.WriteLine("[RadarForm] No matching target found for flight " + hoveredTrack.FlightName);
-                        }
+                        // Lock the track directly (hoveredTrack is of type JPDA_Track)
+                        radar.LockTarget(hoveredTrack);
+                        Console.WriteLine($"[RadarForm] Locked trackID={hoveredTrack.TrackId}, P={hoveredTrack.ExistenceProb:F2}");
                     }
                 }
                 else

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using MathNet.Numerics.Distributions;
 using RealRadarSim.Logging;
+using RealRadarSim.Tracking;
 
 namespace RealRadarSim.Models
 {
@@ -68,12 +69,11 @@ namespace RealRadarSim.Models
         private double aesaTime = 0.0;
         private double aesaElevationOscFreq = 0.1; // Hz
 
-        // NEW: Multiply the rotation speed to make the beam faster.
         public double BeamSpeedMultiplier { get; set; } = 5.0;
 
         // LOCK-RELATED FIELDS
-        private TargetCT lockedTarget = null;
-        public bool IsLocked => (lockedTarget != null);
+        private JPDA_Track lockedTrack = null;
+        public bool IsLocked => (lockedTrack != null);
         private double lockRange = 50000.0;
 
         public AdvancedRadar(
@@ -147,33 +147,42 @@ namespace RealRadarSim.Models
             scanLeftToRight = true;
         }
 
-        public void LockTarget(TargetCT target)
+        public void LockTarget(JPDA_Track track)
         {
             if (RadarType == "aircraft")
             {
-                lockedTarget = target;
+                lockedTrack = track;
             }
         }
 
         public void UnlockTarget()
         {
-            lockedTarget = null;
+            lockedTrack = null;
         }
 
         public void UpdateBeam(double dt)
         {
+            double effectiveMultiplier = UseAesaMode ? BeamSpeedMultiplier : 1.0;
+
             if (RadarType == "aircraft")
             {
+                // Prioritize tracking a locked target regardless of the scanning mode.
+                if (lockedTrack != null)
+                {
+                    TrackLockedTrack(dt);
+                    return;
+                }
+
                 if (UseAesaMode)
                 {
                     aesaTime += dt;
                     double halfAesaRad = (AntennaAzimuthScanDegrees / 2.0) * Math.PI / 180.0;
                     double aesaMinAz = -halfAesaRad;
                     double aesaMaxAz = halfAesaRad;
+
                     if (aesaScanLeftToRight)
                     {
-                        // NEW: Multiply the speed by BeamSpeedMultiplier.
-                        CurrentAzimuth += rotationSpeedRadSec * BeamSpeedMultiplier * dt;
+                        CurrentAzimuth += rotationSpeedRadSec * effectiveMultiplier * dt;
                         if (CurrentAzimuth >= aesaMaxAz)
                         {
                             CurrentAzimuth = aesaMaxAz;
@@ -182,49 +191,45 @@ namespace RealRadarSim.Models
                     }
                     else
                     {
-                        CurrentAzimuth -= rotationSpeedRadSec * BeamSpeedMultiplier * dt;
+                        CurrentAzimuth -= rotationSpeedRadSec * effectiveMultiplier * dt;
                         if (CurrentAzimuth <= aesaMinAz)
                         {
                             CurrentAzimuth = aesaMinAz;
                             aesaScanLeftToRight = true;
                         }
                     }
+
                     double aesaMinEl = -15.0 * Math.PI / 180.0;
                     double aesaMaxEl = 15.0 * Math.PI / 180.0;
                     CurrentElevation = aesaMinEl + (aesaMaxEl - aesaMinEl) * 0.5 * (1 + Math.Sin(2 * Math.PI * aesaElevationOscFreq * aesaTime));
                 }
                 else
                 {
-                    if (lockedTarget != null)
+                    double dAz = rotationSpeedRadSec * effectiveMultiplier * dt * (scanLeftToRight ? 1.0 : -1.0);
+                    CurrentAzimuth += dAz;
+
+                    if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
                     {
-                        TrackLockedTarget(dt);
+                        CurrentAzimuth = maxAzimuth;
+                        scanLeftToRight = false;
+                        AdvanceElevationBar();
                     }
-                    else
+                    else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
                     {
-                        double dAz = rotationSpeedRadSec * BeamSpeedMultiplier * dt * (scanLeftToRight ? 1.0 : -1.0);
-                        CurrentAzimuth += dAz;
-                        if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
-                        {
-                            CurrentAzimuth = maxAzimuth;
-                            scanLeftToRight = false;
-                            AdvanceElevationBar();
-                        }
-                        else if (!scanLeftToRight && CurrentAzimuth <= minAzimuth)
-                        {
-                            CurrentAzimuth = minAzimuth;
-                            scanLeftToRight = true;
-                            AdvanceElevationBar();
-                        }
+                        CurrentAzimuth = minAzimuth;
+                        scanLeftToRight = true;
+                        AdvanceElevationBar();
                     }
                 }
             }
             else
             {
-                CurrentBeamAngle += rotationSpeedRadSec * BeamSpeedMultiplier * dt;
+                CurrentBeamAngle += rotationSpeedRadSec * effectiveMultiplier * dt;
                 if (CurrentBeamAngle > 2 * Math.PI)
                     CurrentBeamAngle -= 2 * Math.PI;
             }
         }
+
 
         private void AdvanceElevationBar()
         {
@@ -237,58 +242,41 @@ namespace RealRadarSim.Models
             CurrentElevation = minElevation + currentElevationBar * barSpacingRad;
         }
 
-        private void TrackLockedTarget(double dt)
+        private void TrackLockedTrack(double dt)
         {
-            double x = lockedTarget.State[0];
-            double y = lockedTarget.State[1];
-            double z = lockedTarget.State[2];
+            // Retrieve the position from the track's filter state.
+            double x = lockedTrack.Filter.State[0];
+            double y = lockedTrack.Filter.State[1];
+            double z = lockedTrack.Filter.State[2];
             double r = Math.Sqrt(x * x + y * y + z * z);
 
-            double snr_dB = snr0_dB
-                + 10.0 * Math.Log10(lockedTarget.RCS / referenceRCS)
-                + 40.0 * Math.Log10(referenceRange / r);
-
-            try
-            {
-                string logEntry = $"Range: {r:F0} m, SNR(dB): {snr_dB:F1}, LockThreshold(dB): {lockSNRThreshold_dB}{Environment.NewLine}";
-                System.IO.File.AppendAllText("debug_log.txt", logEntry);
-            }
-            catch (Exception)
-            {
-            }
-
-            if (r > lockRange || snr_dB < lockSNRThreshold_dB)
+            // Only check if the target is within lock range.
+            if (r > lockRange)
             {
                 UnlockTarget();
                 return;
             }
 
+            // Compute desired azimuth and elevation based on the track's position.
             double desiredAz = Math.Atan2(y, x);
             double desiredEl = Math.Atan2(z, Math.Sqrt(x * x + y * y));
             double maxAngularStep = rotationSpeedRadSec * dt;
 
             double deltaAz = NormalizeAngle(desiredAz - CurrentAzimuth);
             if (Math.Abs(deltaAz) > maxAngularStep)
-            {
                 CurrentAzimuth += Math.Sign(deltaAz) * maxAngularStep;
-            }
             else
-            {
                 CurrentAzimuth = desiredAz;
-            }
             CurrentAzimuth = NormalizeAngle(CurrentAzimuth);
 
             double deltaEl = NormalizeAngle(desiredEl - CurrentElevation);
             if (Math.Abs(deltaEl) > maxAngularStep)
-            {
                 CurrentElevation += Math.Sign(deltaEl) * maxAngularStep;
-            }
             else
-            {
                 CurrentElevation = desiredEl;
-            }
             CurrentElevation = NormalizeAngle(CurrentElevation);
         }
+
 
         public List<Measurement> GetMeasurements(List<TargetCT> targets)
         {
