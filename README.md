@@ -1,5 +1,5 @@
 # What it contains? 
-The simulation right now contains Extended Kalman Filter, JPDA Filter, CFAR Algorithm, basic AESA
+The simulation right now contains Extended Kalman Filter, JPDA Filter, CFAR Algorithm, basic AESA, DBSCAN
 
 # What are planned updates?
 I plan to introduce scripting engine so you can write your own Kalman Filters with ease
