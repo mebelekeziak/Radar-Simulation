@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using MathNet.Numerics.Distributions;
 using RealRadarSim.Logging;
+using RealRadarSim.Tracking;
 
 namespace RealRadarSim.Models
 {
@@ -15,12 +16,12 @@ namespace RealRadarSim.Models
         private readonly double falseAlarmDensity;
 
         // SNR parameters in dB
-        private readonly double snr0_dB;              // Reference SNR in dB (for a 1 m² target) at referenceRange
-        private readonly double requiredSNR_dB;       // Minimum required SNR (in dB) for detection.
-        private readonly double lockSNRThreshold_dB;  // For lock—if SNR falls below this (in dB), lose the lock.
-        private readonly double referenceRange;       // Range at which snr0_dB is defined.
-        private const double referenceRCS = 1.0;        // 1.0 m² (our chosen reference RCS)
-        private readonly double pathLossExponent_dB;    // e.g. 40 dB for 1/r^4 drop-off (or 20 dB for 1/r^2)
+        private readonly double snr0_dB;
+        private readonly double requiredSNR_dB;
+        private readonly double lockSNRThreshold_dB;
+        private readonly double referenceRange;
+        private const double referenceRCS = 1.0;
+        private readonly double pathLossExponent_dB;
 
         private readonly double rangeNoiseBase;
         private readonly double angleNoiseBase;
@@ -38,12 +39,13 @@ namespace RealRadarSim.Models
         public double CurrentAzimuth { get; private set; }
         public double CurrentElevation { get; private set; }
 
-        public string RadarType { get; private set; } = "ground";
+        public string RadarType { get; private set; } = "aircraft";
 
         public int AntennaHeight { get; set; } = 1;
         public bool ShowAzimuthBars { get; set; } = false;
         public bool ShowElevationBars { get; set; } = false;
 
+        // This value (in degrees) defines the total azimuth scan range.
         public double AntennaAzimuthScanDegrees { get; set; } = 140.0;
 
         public double SNR0_dB => snr0_dB;
@@ -56,44 +58,63 @@ namespace RealRadarSim.Models
         private double minElevation;
         private double maxElevation;
 
-        private int currentElevationBar;  // The active bar index
-        private bool scanLeftToRight;
-
-        /// <summary>
-        /// The current bar index for aircraft radar, for UI display.
-        /// </summary>
+        private int currentElevationBar;
         public int CurrentElevationBar => currentElevationBar;
 
-        // ================================
-        // LOCK-RELATED FIELDS
-        // ================================
-        private TargetCT lockedTarget = null;
-        public bool IsLocked => (lockedTarget != null);
-
-        /// <summary>
-        /// A shorter maximum range for tracking/locking a target.
-        /// </summary>
+        private bool scanLeftToRight;
         private double lockRange = 50000.0;
 
-        // ================================
-        // PUBLIC API
-        // ================================
-        public void LockTarget(TargetCT target)
+        // AESA mode flag.
+        public bool UseAesaMode { get; set; } = false;
+
+        // New AESA mode properties.
+        public int ConcurrentAesaBeams { get; set; } = 12;
+        public List<AesaBeam> AesaBeams { get; private set; }
+        private double aesaElevationOscFreq = 0.1; // Hz
+
+        public double BeamSpeedMultiplier { get; set; } = 5.0;
+
+        // LOCK-RELATED FIELDS
+        private JPDA_Track lockedTrack = null;
+        public bool IsLocked => (lockedTrack != null);
+
+        // Nested class representing a single AESA beam.
+        public class AesaBeam
         {
-            if (RadarType == "aircraft")
+            public double CurrentAzimuth; // in radians (clamped between -70° and 70°)
+            public double CurrentElevation; // in radians
+            private double azPhase;
+            private double elPhase;
+
+            public AesaBeam(double initialAz, double initialEl, double initialAzPhase, double initialElPhase)
             {
-                lockedTarget = target;
+                CurrentAzimuth = initialAz;
+                CurrentElevation = initialEl;
+                azPhase = initialAzPhase;
+                elPhase = initialElPhase;
+            }
+
+            public void Update(double dt, double rotationSpeed, double elevationOscFreq)
+            {
+                azPhase += rotationSpeed * dt;
+                elPhase += 2 * Math.PI * elevationOscFreq * dt;
+
+                // Oscillate azimuth between -70° and 70°
+                double minAz = -70.0 * Math.PI / 180.0;
+                double maxAz = 70.0 * Math.PI / 180.0;
+                double midAz = (minAz + maxAz) / 2.0;
+                double ampAz = (maxAz - minAz) / 2.0;
+                CurrentAzimuth = midAz + ampAz * Math.Sin(azPhase);
+
+                // Oscillate elevation between -15° and 15°
+                double minEl = -15.0 * Math.PI / 180.0;
+                double maxEl = 15.0 * Math.PI / 180.0;
+                double midEl = (minEl + maxEl) / 2.0;
+                double ampEl = (maxEl - minEl) / 2.0;
+                CurrentElevation = midEl + ampEl * Math.Sin(elPhase);
             }
         }
 
-        public void UnlockTarget()
-        {
-            lockedTarget = null;
-        }
-
-        // ================================
-        // CONSTRUCTOR
-        // ================================
         public AdvancedRadar(
             double maxRange,
             double beamWidthDeg,
@@ -107,9 +128,9 @@ namespace RealRadarSim.Models
             Random rng,
             double cfarWindowWidth = 5000.0,
             double cfarGuardWidth = 300.0,
-            double cfarThresholdMultiplier = 0.00000000000005,
+            double cfarThresholdMultiplier = 8.0,
             double clusterDistanceMeters = 600.0,
-            string radarType = "ground",
+            string radarType = "aircraft",
             int antennaHeight = 1,
             double antennaAzimuthScanDeg = 140.0,
             double tiltOffsetDeg = 0.0,
@@ -123,7 +144,6 @@ namespace RealRadarSim.Models
             rotationSpeedRadSec = rotationSpeedDegSec * Math.PI / 180.0;
             this.falseAlarmDensity = falseAlarmDensity;
 
-            // Store SNR parameters (all in dB)
             this.snr0_dB = snr0_dB;
             this.referenceRange = referenceRange;
             this.requiredSNR_dB = requiredSNR_dB;
@@ -141,16 +161,26 @@ namespace RealRadarSim.Models
             AntennaHeight = Math.Max(1, Math.Min(antennaHeight, 6));
             AntennaAzimuthScanDegrees = antennaAzimuthScanDeg;
             TiltOffsetDeg = tiltOffsetDeg;
-
             this.lockRange = lockRange;
 
-            if (RadarType == "aircraft")
+            InitializeAircraftMode();
+
+            // Initialize AESA beams if in AESA mode.
+            if (RadarType == "aircraft" && UseAesaMode)
             {
-                InitializeAircraftMode();
-            }
-            else
-            {
-                CurrentBeamAngle = 0.0;
+                AesaBeams = new List<AesaBeam>();
+                for (int i = 0; i < ConcurrentAesaBeams; i++)
+                {
+                    double initialAzPhase = (2 * Math.PI / ConcurrentAesaBeams) * i;
+                    double initialElPhase = (2 * Math.PI / ConcurrentAesaBeams) * i;
+                    double minAz = -70.0 * Math.PI / 180.0;
+                    double maxAz = 70.0 * Math.PI / 180.0;
+                    double midAz = (minAz + maxAz) / 2.0;
+                    double minEl = -15.0 * Math.PI / 180.0;
+                    double maxEl = 15.0 * Math.PI / 180.0;
+                    double midEl = (minEl + maxEl) / 2.0;
+                    AesaBeams.Add(new AesaBeam(midAz, midEl, initialAzPhase, initialElPhase));
+                }
             }
         }
 
@@ -174,20 +204,46 @@ namespace RealRadarSim.Models
             scanLeftToRight = true;
         }
 
-        // ================================
-        // MAIN UPDATE
-        // ================================
-        public void UpdateBeam(double dt)
+        public void LockTarget(JPDA_Track track)
         {
             if (RadarType == "aircraft")
             {
-                if (lockedTarget != null)
+                lockedTrack = track;
+            }
+        }
+
+        public void UnlockTarget()
+        {
+            lockedTrack = null;
+        }
+
+        public void UpdateBeam(double dt)
+        {
+            double effectiveMultiplier = UseAesaMode ? BeamSpeedMultiplier : 1.0;
+
+            if (RadarType == "aircraft")
+            {
+                // Prioritize tracking a locked target.
+                if (lockedTrack != null)
                 {
-                    TrackLockedTarget(dt);
+                    TrackLockedTrack(dt);
+                    return;
+                }
+
+                if (UseAesaMode)
+                {
+                    // Update each AESA beam.
+                    if (AesaBeams != null)
+                    {
+                        foreach (var beam in AesaBeams)
+                        {
+                            beam.Update(dt, rotationSpeedRadSec * effectiveMultiplier, aesaElevationOscFreq);
+                        }
+                    }
                 }
                 else
                 {
-                    double dAz = rotationSpeedRadSec * dt * (scanLeftToRight ? 1.0 : -1.0);
+                    double dAz = rotationSpeedRadSec * effectiveMultiplier * dt * (scanLeftToRight ? 1.0 : -1.0);
                     CurrentAzimuth += dAz;
 
                     if (scanLeftToRight && CurrentAzimuth >= maxAzimuth)
@@ -206,7 +262,7 @@ namespace RealRadarSim.Models
             }
             else
             {
-                CurrentBeamAngle += rotationSpeedRadSec * dt;
+                CurrentBeamAngle += rotationSpeedRadSec * effectiveMultiplier * dt;
                 if (CurrentBeamAngle > 2 * Math.PI)
                     CurrentBeamAngle -= 2 * Math.PI;
             }
@@ -223,83 +279,42 @@ namespace RealRadarSim.Models
             CurrentElevation = minElevation + currentElevationBar * barSpacingRad;
         }
 
-        // ================================
-        // TRACK-LOCKED TARGET LOGIC
-        // ================================
-        private void TrackLockedTarget(double dt)
+        private void TrackLockedTrack(double dt)
         {
-            // Extract the target’s current state.
-            double x = lockedTarget.State[0];
-            double y = lockedTarget.State[1];
-            double z = lockedTarget.State[2];
+            double x = lockedTrack.Filter.State[0];
+            double y = lockedTrack.Filter.State[1];
+            double z = lockedTrack.Filter.State[2];
             double r = Math.Sqrt(x * x + y * y + z * z);
 
-            // Compute SNR in dB for a locked target using a 1/r^4 model.
-            double snr_dB = snr0_dB
-                + 10.0 * Math.Log10(lockedTarget.RCS / referenceRCS)
-                + 40.0 * Math.Log10(referenceRange / r);
-
-            // Log SNR and range details (for debugging purposes).
-            try
-            {
-                string logEntry = $"Range: {r:F0} m, SNR(dB): {snr_dB:F1}, LockThreshold(dB): {lockSNRThreshold_dB}{Environment.NewLine}";
-                System.IO.File.AppendAllText("debug_log.txt", logEntry);
-            }
-            catch (Exception)
-            {
-                // Ignore logging errors.
-            }
-
-            // Check if the target has moved out of range or if the SNR is too low.
-            if (r > lockRange || snr_dB < lockSNRThreshold_dB)
+            if (r > lockRange)
             {
                 UnlockTarget();
                 return;
             }
 
-            // Compute the desired azimuth and elevation from the target’s position.
             double desiredAz = Math.Atan2(y, x);
             double desiredEl = Math.Atan2(z, Math.Sqrt(x * x + y * y));
-
-            // Define a maximum angular step per update.
-            // Here we use the radar’s rotation speed (in rad/s) scaled by the timestep.
             double maxAngularStep = rotationSpeedRadSec * dt;
 
-            // Update azimuth smoothly: compute the shortest angular difference and
-            // step toward the target by at most maxAngularStep.
             double deltaAz = NormalizeAngle(desiredAz - CurrentAzimuth);
             if (Math.Abs(deltaAz) > maxAngularStep)
-            {
                 CurrentAzimuth += Math.Sign(deltaAz) * maxAngularStep;
-            }
             else
-            {
                 CurrentAzimuth = desiredAz;
-            }
             CurrentAzimuth = NormalizeAngle(CurrentAzimuth);
 
-            // Update elevation smoothly in the same manner.
             double deltaEl = NormalizeAngle(desiredEl - CurrentElevation);
             if (Math.Abs(deltaEl) > maxAngularStep)
-            {
                 CurrentElevation += Math.Sign(deltaEl) * maxAngularStep;
-            }
             else
-            {
                 CurrentElevation = desiredEl;
-            }
             CurrentElevation = NormalizeAngle(CurrentElevation);
         }
 
-        // ================================
-        // MEASUREMENT GENERATION
-        // ================================
         public List<Measurement> GetMeasurements(List<TargetCT> targets)
         {
             var rawMeas = new List<Measurement>();
-
             int targetMeasurementCount = 0;
-            // Generate target returns.
             foreach (var tgt in targets)
             {
                 var m = GenerateTargetMeasurement(tgt);
@@ -310,8 +325,6 @@ namespace RealRadarSim.Models
                 }
             }
             DebugLogger.LogMeasurement($"Generated {targetMeasurementCount} target measurements.");
-
-            // Generate false alarms.
             double sectorArea = 0.5 * BeamWidthRad * MaxRange * MaxRange;
             double lambda = falseAlarmDensity * sectorArea;
             int numFalse = Poisson.Sample(rng, lambda);
@@ -319,8 +332,6 @@ namespace RealRadarSim.Models
             {
                 rawMeas.Add(GenerateFalseAlarm());
             }
-
-            // Apply CFAR filtering and clustering.
             var cfarDetections = CFARFilterMeasurements(rawMeas);
             DebugLogger.LogCFAR($"CFAR Filter: {cfarDetections.Count} detections passed out of {rawMeas.Count} raw measurements.");
             return MergeCloseDetections(cfarDetections, ClusterDistanceMeters);
@@ -337,11 +348,9 @@ namespace RealRadarSim.Models
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
 
-            // Determine an effective beam width (which widens at short ranges).
             double nominalBeamWidth = BeamWidthRad;
             double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0;
             double effectiveBeamWidth = nominalBeamWidth;
-
             if (r < referenceRange)
             {
                 effectiveBeamWidth = nominalBeamWidth * (referenceRange / r);
@@ -349,16 +358,39 @@ namespace RealRadarSim.Models
                     effectiveBeamWidth = maxEffectiveBeamWidth;
             }
 
-            // Check whether the target falls within the current beam.
             if (RadarType == "aircraft")
             {
-                double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
-                if (diffAz > effectiveBeamWidth * 0.5) return null;
-
-                const double singleBarDeg = 2.0;
-                double barHalfRad = (singleBarDeg * Math.PI / 180.0) * 0.5;
-                double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
-                if (diffEl > barHalfRad) return null;
+                if (UseAesaMode)
+                {
+                    bool inAnyBeam = false;
+                    if (AesaBeams != null)
+                    {
+                        foreach (var beam in AesaBeams)
+                        {
+                            double diffAz = Math.Abs(NormalizeAngle(az - beam.CurrentAzimuth));
+                            if (diffAz <= effectiveBeamWidth * 0.5)
+                            {
+                                double effectiveElevationWidth = effectiveBeamWidth * 2.0;
+                                double diffEl = Math.Abs(NormalizeAngle(el - beam.CurrentElevation));
+                                if (diffEl <= effectiveElevationWidth * 0.5)
+                                {
+                                    inAnyBeam = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!inAnyBeam) return null;
+                }
+                else
+                {
+                    double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
+                    if (diffAz > effectiveBeamWidth * 0.5) return null;
+                    const double singleBarDeg = 2.0;
+                    double barHalfRad = (singleBarDeg * Math.PI / 180.0) * 0.5;
+                    double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
+                    if (diffEl > barHalfRad) return null;
+                }
             }
             else
             {
@@ -366,18 +398,16 @@ namespace RealRadarSim.Models
                 if (diffBeam > effectiveBeamWidth * 0.5) return null;
             }
 
-            // Compute SNR in dB. Here we use the 1/r² model (i.e. pathLossExponent_dB) for measurement generation.
             double snr_dB = snr0_dB
                 + 10.0 * Math.Log10(tgt.RCS / referenceRCS)
                 + pathLossExponent_dB * Math.Log10(referenceRange / r);
-
+            if (UseAesaMode)
+            {
+                snr_dB += 3.0;
+            }
             if (snr_dB < requiredSNR_dB) return null;
-
-            // Convert SNR from dB to linear amplitude.
             double snr_linear = Math.Pow(10.0, snr_dB / 10.0);
-            // Adjust for beam widening.
             snr_linear *= (nominalBeamWidth / effectiveBeamWidth);
-
             double rMeas = r + Normal.Sample(rng, 0, rangeNoiseBase);
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = az + Normal.Sample(rng, 0, angleNoiseBase);
@@ -401,7 +431,16 @@ namespace RealRadarSim.Models
             double u = rng.NextDouble();
             double rFA = MaxRange * Math.Sqrt(u);
             double halfBeam = BeamWidthRad * 0.5;
-            double mainAz = (RadarType == "aircraft") ? CurrentAzimuth : CurrentBeamAngle;
+            double mainAz;
+            if (RadarType == "aircraft" && UseAesaMode && AesaBeams != null && AesaBeams.Count > 0)
+            {
+                int idx = rng.Next(AesaBeams.Count);
+                mainAz = AesaBeams[idx].CurrentAzimuth;
+            }
+            else
+            {
+                mainAz = (RadarType == "aircraft") ? CurrentAzimuth : CurrentBeamAngle;
+            }
             double azFA = NormalizeAngle(mainAz + (rng.NextDouble() * BeamWidthRad - halfBeam));
             double elCenter = (RadarType == "aircraft") ? CurrentElevation : 0.0;
             double elFA = elCenter + Normal.Sample(rng, 0, angleNoiseBase * 2);
@@ -410,7 +449,6 @@ namespace RealRadarSim.Models
             double azMeas = NormalizeAngle(azFA + Normal.Sample(rng, 0, angleNoiseBase));
             double elMeas = NormalizeAngle(elFA + Normal.Sample(rng, 0, angleNoiseBase));
 
-            // For false alarms, assume an amplitude near the required threshold.
             double falseAmp_linear = Math.Pow(10.0, requiredSNR_dB / 10.0)
                 + Normal.Sample(rng, 0, 0.2 * Math.Pow(10.0, requiredSNR_dB / 10.0));
             if (falseAmp_linear < 0.0)
@@ -425,12 +463,6 @@ namespace RealRadarSim.Models
             };
         }
 
-        /// <summary>
-        /// Applies a CFAR filter to the provided measurements.
-        /// In addition to filtering, logs all the intermediate values used in the decision.
-        /// </summary>
-        /// <param name="measurements">List of raw measurements.</param>
-        /// <returns>List of measurements that passed the CFAR test.</returns>
         private List<Measurement> CFARFilterMeasurements(List<Measurement> measurements)
         {
             var sorted = measurements.OrderBy(m => m.Range).ToList();
@@ -443,7 +475,6 @@ namespace RealRadarSim.Models
                 double cutRange = cut.Range;
                 var training = new List<double>();
 
-                // Gather training data: neighbor amplitudes within the CFAR window but outside the guard band.
                 foreach (var neighbor in sorted)
                 {
                     if (ReferenceEquals(neighbor, cut)) continue;
@@ -454,7 +485,6 @@ namespace RealRadarSim.Models
 
                 DebugLogger.LogCFAR($"CFAR - Measurement index {i}: Range = {cutRange:F2}, Amplitude = {cut.Amplitude:F2}, Training data count = {training.Count}");
 
-                // If no training data is available, use a fallback threshold.
                 if (training.Count == 0)
                 {
                     double fallbackThreshold = Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.5;
@@ -463,7 +493,6 @@ namespace RealRadarSim.Models
                     continue;
                 }
 
-                // Sort the training data and select the 75th percentile (index K) as the noise estimate.
                 training.Sort();
                 int K = (int)(0.75 * training.Count);
                 if (K >= training.Count)
@@ -472,14 +501,12 @@ namespace RealRadarSim.Models
                     K = 0;
                 double noiseEstimate = training[K];
 
-                // Compute the detection threshold.
                 double threshold = CFARThresholdMultiplier * noiseEstimate;
                 passed[i] = (cut.Amplitude >= threshold);
 
                 DebugLogger.LogCFAR($"CFAR - Measurement index {i}: Sorted training list = [{string.Join(", ", training.Select(a => a.ToString("F2")))}], K index = {K}, Noise estimate = {noiseEstimate:F2}, CFARThresholdMultiplier = {CFARThresholdMultiplier}, Computed threshold = {threshold:F2}, Decision: {(passed[i] ? "Passed" : "Rejected")}.");
             }
 
-            // Build the list of measurements that passed the CFAR test.
             for (int i = 0; i < sorted.Count; i++)
             {
                 if (passed[i])
