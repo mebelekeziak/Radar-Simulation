@@ -30,7 +30,7 @@ namespace RealRadarSim.Tracking
         public double InitAccelStd { get; set; } = 2.0;
 
         // Base probability for the chi-square gate (set to 0.99 for 99% coverage)
-        public double GatingProbability { get; set; } = 0.999;
+        public double GatingProbability { get; set; } = 0.997;
         public double AccelNoise { get; set; } = 2.0;
         public double ProbDetection { get; set; } = 0.9;
         public double ProbSurvival { get; set; } = 0.995;
