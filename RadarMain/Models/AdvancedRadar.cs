@@ -81,7 +81,7 @@ namespace RealRadarSim.Models
         // Nested class representing a single AESA beam.
         public class AesaBeam
         {
-            public double CurrentAzimuth; // in radians (clamped between -70° and 70°)
+            public double CurrentAzimuth;   // in radians
             public double CurrentElevation; // in radians
             private double azPhase;
             private double elPhase;
@@ -97,7 +97,7 @@ namespace RealRadarSim.Models
             public void Update(double dt, double rotationSpeed, double elevationOscFreq)
             {
                 azPhase += rotationSpeed * dt;
-                elPhase += 2 * Math.PI * elevationOscFreq * dt;
+                elPhase += 2.0 * Math.PI * elevationOscFreq * dt;
 
                 // Oscillate azimuth between -70° and 70°
                 double minAz = -70.0 * Math.PI / 180.0;
@@ -129,7 +129,7 @@ namespace RealRadarSim.Models
             double cfarWindowWidth = 5000.0,
             double cfarGuardWidth = 300.0,
             double cfarThresholdMultiplier = 8.0,
-            double clusterDistanceMeters = 600.0,
+            double clusterDistanceMeters = 2600.0,
             string radarType = "aircraft",
             int antennaHeight = 1,
             double antennaAzimuthScanDeg = 140.0,
@@ -171,14 +171,17 @@ namespace RealRadarSim.Models
                 AesaBeams = new List<AesaBeam>();
                 for (int i = 0; i < ConcurrentAesaBeams; i++)
                 {
-                    double initialAzPhase = (2 * Math.PI / ConcurrentAesaBeams) * i;
-                    double initialElPhase = (2 * Math.PI / ConcurrentAesaBeams) * i;
+                    double initialAzPhase = (2.0 * Math.PI / ConcurrentAesaBeams) * i;
+                    double initialElPhase = (2.0 * Math.PI / ConcurrentAesaBeams) * i;
+
                     double minAz = -70.0 * Math.PI / 180.0;
                     double maxAz = 70.0 * Math.PI / 180.0;
                     double midAz = (minAz + maxAz) / 2.0;
+
                     double minEl = -15.0 * Math.PI / 180.0;
                     double maxEl = 15.0 * Math.PI / 180.0;
                     double midEl = (minEl + maxEl) / 2.0;
+
                     AesaBeams.Add(new AesaBeam(midAz, midEl, initialAzPhase, initialElPhase));
                 }
             }
@@ -223,7 +226,7 @@ namespace RealRadarSim.Models
 
             if (RadarType == "aircraft")
             {
-                // Prioritize tracking a locked target.
+                // If we have a locked target, continue tracking it.
                 if (lockedTrack != null)
                 {
                     TrackLockedTrack(dt);
@@ -263,8 +266,8 @@ namespace RealRadarSim.Models
             else
             {
                 CurrentBeamAngle += rotationSpeedRadSec * effectiveMultiplier * dt;
-                if (CurrentBeamAngle > 2 * Math.PI)
-                    CurrentBeamAngle -= 2 * Math.PI;
+                if (CurrentBeamAngle > 2.0 * Math.PI)
+                    CurrentBeamAngle -= 2.0 * Math.PI;
             }
         }
 
@@ -325,6 +328,8 @@ namespace RealRadarSim.Models
                 }
             }
             DebugLogger.LogMeasurement($"Generated {targetMeasurementCount} target measurements.");
+
+            // Generate false alarms
             double sectorArea = 0.5 * BeamWidthRad * MaxRange * MaxRange;
             double lambda = falseAlarmDensity * sectorArea;
             int numFalse = Poisson.Sample(rng, lambda);
@@ -332,8 +337,12 @@ namespace RealRadarSim.Models
             {
                 rawMeas.Add(GenerateFalseAlarm());
             }
+
+            // CFAR filtering
             var cfarDetections = CFARFilterMeasurements(rawMeas);
             DebugLogger.LogCFAR($"CFAR Filter: {cfarDetections.Count} detections passed out of {rawMeas.Count} raw measurements.");
+
+            // --- NEW: Updated DBSCAN-based merging
             return MergeCloseDetections(cfarDetections, ClusterDistanceMeters);
         }
 
@@ -351,6 +360,7 @@ namespace RealRadarSim.Models
             double nominalBeamWidth = BeamWidthRad;
             double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0;
             double effectiveBeamWidth = nominalBeamWidth;
+
             if (r < referenceRange)
             {
                 effectiveBeamWidth = nominalBeamWidth * (referenceRange / r);
@@ -370,6 +380,7 @@ namespace RealRadarSim.Models
                             double diffAz = Math.Abs(NormalizeAngle(az - beam.CurrentAzimuth));
                             if (diffAz <= effectiveBeamWidth * 0.5)
                             {
+                                // Expand elevation beam width a bit for AESA
                                 double effectiveElevationWidth = effectiveBeamWidth * 2.0;
                                 double diffEl = Math.Abs(NormalizeAngle(el - beam.CurrentElevation));
                                 if (diffEl <= effectiveElevationWidth * 0.5)
@@ -386,7 +397,8 @@ namespace RealRadarSim.Models
                 {
                     double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
                     if (diffAz > effectiveBeamWidth * 0.5) return null;
-                    const double singleBarDeg = 2.0;
+
+                    double singleBarDeg = 2.0;
                     double barHalfRad = (singleBarDeg * Math.PI / 180.0) * 0.5;
                     double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
                     if (diffEl > barHalfRad) return null;
@@ -401,13 +413,18 @@ namespace RealRadarSim.Models
             double snr_dB = snr0_dB
                 + 10.0 * Math.Log10(tgt.RCS / referenceRCS)
                 + pathLossExponent_dB * Math.Log10(referenceRange / r);
+
             if (UseAesaMode)
             {
+                // A simple boost for AESA
                 snr_dB += 3.0;
             }
+
             if (snr_dB < requiredSNR_dB) return null;
+
             double snr_linear = Math.Pow(10.0, snr_dB / 10.0);
             snr_linear *= (nominalBeamWidth / effectiveBeamWidth);
+
             double rMeas = r + Normal.Sample(rng, 0, rangeNoiseBase);
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = az + Normal.Sample(rng, 0, angleNoiseBase);
@@ -422,7 +439,10 @@ namespace RealRadarSim.Models
                 Amplitude = amp
             };
 
-            DebugLogger.LogMeasurement($"Generated target measurement: Range = {measurement.Range:F2}, Azimuth = {measurement.Azimuth:F2}, Elevation = {measurement.Elevation:F2}, Amplitude = {measurement.Amplitude:F2}");
+            DebugLogger.LogMeasurement(
+                $"Generated target measurement: Range={measurement.Range:F2}, " +
+                $"Az={measurement.Azimuth:F2}, El={measurement.Elevation:F2}, Amp={measurement.Amplitude:F2}"
+            );
             return measurement;
         }
 
@@ -431,6 +451,7 @@ namespace RealRadarSim.Models
             double u = rng.NextDouble();
             double rFA = MaxRange * Math.Sqrt(u);
             double halfBeam = BeamWidthRad * 0.5;
+
             double mainAz;
             if (RadarType == "aircraft" && UseAesaMode && AesaBeams != null && AesaBeams.Count > 0)
             {
@@ -441,16 +462,18 @@ namespace RealRadarSim.Models
             {
                 mainAz = (RadarType == "aircraft") ? CurrentAzimuth : CurrentBeamAngle;
             }
+
             double azFA = NormalizeAngle(mainAz + (rng.NextDouble() * BeamWidthRad - halfBeam));
             double elCenter = (RadarType == "aircraft") ? CurrentElevation : 0.0;
-            double elFA = elCenter + Normal.Sample(rng, 0, angleNoiseBase * 2);
+            double elFA = elCenter + Normal.Sample(rng, 0, angleNoiseBase * 2.0);
             double rMeas = rFA + Normal.Sample(rng, 0, rangeNoiseBase * 0.5);
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = NormalizeAngle(azFA + Normal.Sample(rng, 0, angleNoiseBase));
             double elMeas = NormalizeAngle(elFA + Normal.Sample(rng, 0, angleNoiseBase));
 
             double falseAmp_linear = Math.Pow(10.0, requiredSNR_dB / 10.0)
-                + Normal.Sample(rng, 0, 0.2 * Math.Pow(10.0, requiredSNR_dB / 10.0));
+                                      + Normal.Sample(rng, 0, 0.2 * Math.Pow(10.0, requiredSNR_dB / 10.0));
+
             if (falseAmp_linear < 0.0)
                 falseAmp_linear = 0.8 * Math.Pow(10.0, requiredSNR_dB / 10.0);
 
@@ -483,28 +506,37 @@ namespace RealRadarSim.Models
                         training.Add(neighbor.Amplitude);
                 }
 
-                DebugLogger.LogCFAR($"CFAR - Measurement index {i}: Range = {cutRange:F2}, Amplitude = {cut.Amplitude:F2}, Training data count = {training.Count}");
+                DebugLogger.LogCFAR(
+                    $"CFAR - idx={i}: Range={cutRange:F2}, Amp={cut.Amplitude:F2}, " +
+                    $"TrainingCount={training.Count}"
+                );
 
                 if (training.Count == 0)
                 {
                     double fallbackThreshold = Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.5;
                     passed[i] = (cut.Amplitude > fallbackThreshold);
-                    DebugLogger.LogCFAR($"CFAR - Measurement index {i}: No training data available. Fallback threshold (1.5 * required SNR linear) = {fallbackThreshold:F2}. Decision: {(passed[i] ? "Passed" : "Rejected")}.");
+                    DebugLogger.LogCFAR(
+                        $"CFAR - idx={i}: No training data. " +
+                        $"Fallback threshold={fallbackThreshold:F2}. " +
+                        $"Decision={(passed[i] ? "Pass" : "Reject")}."
+                    );
                     continue;
                 }
 
                 training.Sort();
                 int K = (int)(0.75 * training.Count);
-                if (K >= training.Count)
-                    K = training.Count - 1;
-                if (K < 0)
-                    K = 0;
+                if (K >= training.Count) K = training.Count - 1;
+                if (K < 0) K = 0;
                 double noiseEstimate = training[K];
 
                 double threshold = CFARThresholdMultiplier * noiseEstimate;
                 passed[i] = (cut.Amplitude >= threshold);
 
-                DebugLogger.LogCFAR($"CFAR - Measurement index {i}: Sorted training list = [{string.Join(", ", training.Select(a => a.ToString("F2")))}], K index = {K}, Noise estimate = {noiseEstimate:F2}, CFARThresholdMultiplier = {CFARThresholdMultiplier}, Computed threshold = {threshold:F2}, Decision: {(passed[i] ? "Passed" : "Rejected")}.");
+                DebugLogger.LogCFAR(
+                    $"CFAR - idx={i}: NoiseEst={noiseEstimate:F2}, " +
+                    $"Threshold={threshold:F2}, Amp={cut.Amplitude:F2}, " +
+                    $"Decision={(passed[i] ? "Pass" : "Reject")}."
+                );
             }
 
             for (int i = 0; i < sorted.Count; i++)
@@ -516,28 +548,172 @@ namespace RealRadarSim.Models
             return results;
         }
 
-        private List<Measurement> MergeCloseDetections(List<Measurement> meas, double maxDist)
+        // ------
+        // DBSCAN
+        // ------
+        private List<Measurement> MergeCloseDetections(List<Measurement> meas, double epsBase)
         {
-            var merged = new List<Measurement>();
-            bool[] used = new bool[meas.Count];
-            var sorted = meas.OrderByDescending(m => m.Amplitude).ToList();
+            if (meas == null || meas.Count == 0)
+                return meas;
 
-            for (int i = 0; i < sorted.Count; i++)
+            // Factor that scales with detection range; tweak as needed
+            double dynamicAlpha = 0.02;  // e.g. 2% of measured range
+
+            int n = meas.Count;
+            int[] clusterIds = new int[n];
+            for (int i = 0; i < n; i++)
+                clusterIds[i] = -1; // unassigned
+
+            bool[] visited = new bool[n];
+            // Precompute Cartesian coords for each measurement
+            var cart = new (double x, double y, double z, double r)[n];
+            for (int i = 0; i < n; i++)
             {
-                if (used[i]) continue;
-                var current = sorted[i];
-                merged.Add(current);
-                used[i] = true;
+                var (cx, cy, cz) = ToCartesian(meas[i]);
+                double rr = Math.Sqrt(cx * cx + cy * cy + cz * cz);
+                cart[i] = (cx, cy, cz, rr);
+            }
 
-                for (int j = i + 1; j < sorted.Count; j++)
+            // Let single points form a cluster (minPts = 1)
+            int minPts = 1;
+            int clusterId = 0;
+
+            for (int i = 0; i < n; i++)
+            {
+                if (!visited[i])
                 {
-                    if (used[j]) continue;
-                    double dist = CartesianDistance(current, sorted[j]);
-                    if (dist < maxDist)
-                        used[j] = true;
+                    visited[i] = true;
+
+                    // Adjust eps by detection range if desired
+                    double localEps = epsBase + (dynamicAlpha * cart[i].r);
+
+                    List<int> neighborIndices = RegionQuery(cart, i, localEps);
+                    if (neighborIndices.Count < minPts)
+                    {
+                        // Place it in its own small cluster rather than discarding
+                        clusterId++;
+                        clusterIds[i] = clusterId;
+                    }
+                    else
+                    {
+                        clusterId++;
+                        ExpandCluster(cart, i, neighborIndices, clusterId, localEps, minPts, visited, clusterIds);
+                    }
                 }
             }
+
+            // Group by cluster
+            Dictionary<int, List<int>> clusters = new Dictionary<int, List<int>>();
+            for (int i = 0; i < n; i++)
+            {
+                int cid = clusterIds[i];
+                if (!clusters.ContainsKey(cid))
+                    clusters[cid] = new List<int>();
+                clusters[cid].Add(i);
+            }
+
+            // Merge each cluster
+            List<Measurement> merged = new List<Measurement>();
+            foreach (var kvp in clusters)
+            {
+                var idxList = kvp.Value;
+                if (idxList.Count == 1)
+                {
+                    merged.Add(meas[idxList[0]]);
+                }
+                else
+                {
+                    double sumWeight = 0.0;
+                    double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
+                    double sumAmp = 0.0;
+
+                    foreach (int idx in idxList)
+                    {
+                        double w = meas[idx].Amplitude;
+                        sumWeight += w;
+                        sumAmp += w;
+                        var (mx, my, mz) = ToCartesian(meas[idx]);
+                        sumX += mx * w;
+                        sumY += my * w;
+                        sumZ += mz * w;
+                    }
+
+                    double avgX = sumX / sumWeight;
+                    double avgY = sumY / sumWeight;
+                    double avgZ = sumZ / sumWeight;
+                    double mergedRange = Math.Sqrt(avgX * avgX + avgY * avgY + avgZ * avgZ);
+                    double mergedAz = Math.Atan2(avgY, avgX);
+                    double mergedEl = Math.Atan2(avgZ, Math.Sqrt(avgX * avgX + avgY * avgY));
+
+                    // Summation approach to amplitude (or choose max, etc.)
+                    double finalAmp = sumAmp;
+
+                    Measurement mergedMeasurement = new Measurement
+                    {
+                        Range = mergedRange,
+                        Azimuth = NormalizeAngle(mergedAz),
+                        Elevation = NormalizeAngle(mergedEl),
+                        Amplitude = finalAmp
+                    };
+                    merged.Add(mergedMeasurement);
+                }
+            }
+
             return merged;
+        }
+
+        private List<int> RegionQuery((double x, double y, double z, double r)[] cart, int index, double eps)
+        {
+            var results = new List<int>();
+            var (ix, iy, iz, _) = cart[index];
+            for (int j = 0; j < cart.Length; j++)
+            {
+                if (j == index) continue;
+                var (jx, jy, jz, _) = cart[j];
+                double dx = ix - jx;
+                double dy = iy - jy;
+                double dz = iz - jz;
+                double dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+
+                if (dist <= eps)
+                    results.Add(j);
+            }
+            return results;
+        }
+
+        private void ExpandCluster(
+            (double x, double y, double z, double r)[] cart,
+            int index,
+            List<int> neighborIndices,
+            int clusterId,
+            double eps,
+            int minPts,
+            bool[] visited,
+            int[] clusterIds)
+        {
+            clusterIds[index] = clusterId;
+            Queue<int> seeds = new Queue<int>(neighborIndices);
+
+            while (seeds.Count > 0)
+            {
+                int current = seeds.Dequeue();
+                if (!visited[current])
+                {
+                    visited[current] = true;
+                    List<int> currentNeighbors = RegionQuery(cart, current, eps);
+
+                    if (currentNeighbors.Count >= minPts)
+                    {
+                        foreach (int n in currentNeighbors)
+                        {
+                            if (!seeds.Contains(n))
+                                seeds.Enqueue(n);
+                        }
+                    }
+                }
+                if (clusterIds[current] == -1)
+                    clusterIds[current] = clusterId;
+            }
         }
 
         private double CartesianDistance(Measurement a, Measurement b)
@@ -561,10 +737,8 @@ namespace RealRadarSim.Models
 
         private double NormalizeAngle(double angle)
         {
-            while (angle > Math.PI)
-                angle -= 2.0 * Math.PI;
-            while (angle < -Math.PI)
-                angle += 2.0 * Math.PI;
+            while (angle > Math.PI) angle -= 2.0 * Math.PI;
+            while (angle < -Math.PI) angle += 2.0 * Math.PI;
             return angle;
         }
     }
