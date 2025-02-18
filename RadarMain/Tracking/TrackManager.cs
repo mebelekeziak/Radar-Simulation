@@ -226,12 +226,178 @@ namespace RealRadarSim.Tracking
             // 9) Confirm candidate tracks (initiate new tracks).
             ConfirmCandidates();
 
-            // 10) Merge tracks that are close together using Gaussian fusion.
-            MergeCloseTracks();
+            // 10) Merge tracks that are close together using DBSCAN-based Gaussian fusion.
+            MergeTracksDBSCAN();
 
             // 11) Prune tracks that are too weak or too old.
             PruneTracks();
         }
+
+        #region DBSCAN-Based Track Merging Methods
+
+        /// <summary>
+        /// Clusters tracks using DBSCAN and fuses each cluster’s tracks via Gaussian fusion.
+        /// </summary>
+        private void MergeTracksDBSCAN()
+        {
+            int n = tracks.Count;
+            if (n == 0)
+                return;
+
+            // Initialize cluster IDs (-1 means unassigned) and visited flag for each track.
+            int[] clusterIds = new int[n];
+            for (int i = 0; i < n; i++)
+                clusterIds[i] = -1;
+            bool[] visited = new bool[n];
+
+            // Extract each track’s position (first three state elements).
+            var positions = new (double x, double y, double z)[n];
+            for (int i = 0; i < n; i++)
+            {
+                var pos = tracks[i].Filter.State.SubVector(0, 3);
+                positions[i] = (pos[0], pos[1], pos[2]);
+            }
+
+            // DBSCAN parameters.
+            int clusterId = 0;
+            int minPts = 1;       // Even a single track can form its own cluster.
+            double eps = 50.0;    // Merge threshold in meters (adjustable as needed).
+
+            // Perform DBSCAN clustering.
+            for (int i = 0; i < n; i++)
+            {
+                if (!visited[i])
+                {
+                    visited[i] = true;
+                    List<int> neighborIndices = RegionQueryPositions(positions, i, eps);
+                    if (neighborIndices.Count < minPts)
+                    {
+                        // Mark as noise (we treat noise as its own cluster, id 0).
+                        clusterIds[i] = 0;
+                    }
+                    else
+                    {
+                        clusterId++;
+                        ExpandClusterPositions(positions, i, neighborIndices, clusterId, eps, minPts, visited, clusterIds);
+                    }
+                }
+            }
+
+            // Group tracks by their cluster ID.
+            Dictionary<int, List<JPDA_Track>> clusters = new Dictionary<int, List<JPDA_Track>>();
+            for (int i = 0; i < n; i++)
+            {
+                int cid = clusterIds[i];
+                if (!clusters.ContainsKey(cid))
+                    clusters[cid] = new List<JPDA_Track>();
+                clusters[cid].Add(tracks[i]);
+            }
+
+            // For each cluster, fuse the tracks using Gaussian fusion.
+            List<JPDA_Track> mergedTracks = new List<JPDA_Track>();
+            foreach (var kvp in clusters)
+            {
+                var clusterTracks = kvp.Value;
+                if (clusterTracks.Count == 1)
+                {
+                    mergedTracks.Add(clusterTracks[0]);
+                }
+                else
+                {
+                    // Fuse all tracks in the cluster iteratively.
+                    JPDA_Track mergedTrack = clusterTracks[0];
+                    for (int i = 1; i < clusterTracks.Count; i++)
+                    {
+                        mergedTrack = FuseTracks(mergedTrack, clusterTracks[i]);
+                    }
+                    mergedTracks.Add(mergedTrack);
+                }
+            }
+
+            // Replace the current track list with the merged tracks.
+            tracks = mergedTracks;
+        }
+
+        /// <summary>
+        /// Returns a list of indices for tracks within 'eps' distance.
+        /// </summary>
+        private List<int> RegionQueryPositions((double x, double y, double z)[] positions, int index, double eps)
+        {
+            List<int> neighbors = new List<int>();
+            var point = positions[index];
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (Distance(point, positions[i]) <= eps)
+                    neighbors.Add(i);
+            }
+            return neighbors;
+        }
+
+        /// <summary>
+        /// Computes the Euclidean distance between two 3D points.
+        /// </summary>
+        private double Distance((double x, double y, double z) a, (double x, double y, double z) b)
+        {
+            double dx = a.x - b.x;
+            double dy = a.y - b.y;
+            double dz = a.z - b.z;
+            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        /// <summary>
+        /// Expands the DBSCAN cluster for the given track index.
+        /// </summary>
+        private void ExpandClusterPositions(
+            (double x, double y, double z)[] positions,
+            int index,
+            List<int> neighborIndices,
+            int clusterId,
+            double eps,
+            int minPts,
+            bool[] visited,
+            int[] clusterIds)
+        {
+            clusterIds[index] = clusterId;
+            Queue<int> seeds = new Queue<int>(neighborIndices);
+            while (seeds.Count > 0)
+            {
+                int current = seeds.Dequeue();
+                if (!visited[current])
+                {
+                    visited[current] = true;
+                    List<int> currentNeighbors = RegionQueryPositions(positions, current, eps);
+                    if (currentNeighbors.Count >= minPts)
+                    {
+                        foreach (int n in currentNeighbors)
+                        {
+                            if (!seeds.Contains(n))
+                                seeds.Enqueue(n);
+                        }
+                    }
+                }
+                if (clusterIds[current] == -1)
+                    clusterIds[current] = clusterId;
+            }
+        }
+
+        /// <summary>
+        /// Fuses two tracks using Gaussian fusion.
+        /// </summary>
+        private JPDA_Track FuseTracks(JPDA_Track t1, JPDA_Track t2)
+        {
+            Matrix<double> P1Inv = t1.Filter.Covariance.Inverse();
+            Matrix<double> P2Inv = t2.Filter.Covariance.Inverse();
+            Matrix<double> fusedCov = (P1Inv + P2Inv).Inverse();
+            Vector<double> fusedState = fusedCov * (P1Inv * t1.Filter.State + P2Inv * t2.Filter.State);
+
+            // Update one track with the fused state and covariance.
+            t2.Filter.State = fusedState;
+            t2.Filter.Covariance = fusedCov;
+            t2.ExistenceProb = Math.Max(t2.ExistenceProb, t1.ExistenceProb);
+            return t2;
+        }
+
+        #endregion
 
         #region Helper Methods
 
@@ -331,7 +497,20 @@ namespace RealRadarSim.Tracking
             return $"[Target: {targetName}, Range: {m.Range:F2}, Az: {m.Azimuth:F2}, El: {m.Elevation:F2}, Amp: {m.Amplitude:F2}]";
         }
 
-        // --- Candidate Track Management ---
+        /// <summary>
+        /// Converts a measurement in spherical coordinates to a Cartesian vector.
+        /// </summary>
+        private Vector<double> MeasurementToCartesian(Measurement m)
+        {
+            double x = m.Range * Math.Cos(m.Elevation) * Math.Cos(m.Azimuth);
+            double y = m.Range * Math.Cos(m.Elevation) * Math.Sin(m.Azimuth);
+            double z = m.Range * Math.Sin(m.Elevation);
+            return DenseVector.OfArray(new double[] { x, y, z });
+        }
+
+        #endregion
+
+        #region Candidate Track Management
 
         private void CreateOrUpdateCandidates(List<Measurement> measurements, double[] beta0)
         {
@@ -422,48 +601,9 @@ namespace RealRadarSim.Tracking
             }
         }
 
-        // --- Track Merging and Pruning ---
+        #endregion
 
-        private void MergeCloseTracks()
-        {
-            // Parameters for merging – these can be further tuned.
-            double posMergeThreshold = 50.0;  // Euclidean distance in meters.
-            double velMergeThreshold = 25.0;   // Difference in velocity (m/s).
-            List<JPDA_Track> toRemove = new List<JPDA_Track>();
-
-            // Iterate over pairs of tracks.
-            for (int i = 0; i < tracks.Count; i++)
-            {
-                for (int j = i + 1; j < tracks.Count; j++)
-                {
-                    JPDA_Track t1 = tracks[i];
-                    JPDA_Track t2 = tracks[j];
-
-                    Vector<double> pos1 = t1.Filter.State.SubVector(0, 3);
-                    Vector<double> pos2 = t2.Filter.State.SubVector(0, 3);
-                    double posDist = (pos1 - pos2).L2Norm();
-
-                    Vector<double> vel1 = t1.Filter.State.SubVector(3, 3);
-                    Vector<double> vel2 = t2.Filter.State.SubVector(3, 3);
-                    double velDiffNorm = (vel1 - vel2).L2Norm();
-
-                    if (posDist < posMergeThreshold && velDiffNorm < velMergeThreshold)
-                    {
-                        // Fuse using Gaussian fusion (weighted by the inverse covariance).
-                        Matrix<double> P1Inv = t1.Filter.Covariance.Inverse();
-                        Matrix<double> P2Inv = t2.Filter.Covariance.Inverse();
-                        Matrix<double> fusedCov = (P1Inv + P2Inv).Inverse();
-                        Vector<double> fusedState = fusedCov * (P1Inv * t1.Filter.State + P2Inv * t2.Filter.State);
-                        t2.Filter.State = fusedState;
-                        t2.Filter.Covariance = fusedCov;
-                        t2.ExistenceProb = Math.Max(t2.ExistenceProb, t1.ExistenceProb);
-                        toRemove.Add(t1);
-                    }
-                }
-            }
-            tracks.RemoveAll(t => toRemove.Contains(t));
-        }
-
+        // --- Track Pruning ---
         private void PruneTracks()
         {
             tracks.RemoveAll(t => (t.ExistenceProb < PruneThreshold) || (t.Age > MaxTrackAge));
@@ -473,16 +613,6 @@ namespace RealRadarSim.Tracking
         /// Returns the list of confirmed tracks.
         /// </summary>
         public List<JPDA_Track> GetTracks() => tracks;
-
-        private Vector<double> MeasurementToCartesian(Measurement m)
-        {
-            double x = m.Range * Math.Cos(m.Elevation) * Math.Cos(m.Azimuth);
-            double y = m.Range * Math.Cos(m.Elevation) * Math.Sin(m.Azimuth);
-            double z = m.Range * Math.Sin(m.Elevation);
-            return DenseVector.OfArray(new double[] { x, y, z });
-        }
-
-        #endregion
     }
 
     /// <summary>
