@@ -516,28 +516,145 @@ namespace RealRadarSim.Models
             return results;
         }
 
-        private List<Measurement> MergeCloseDetections(List<Measurement> meas, double maxDist)
+        private List<Measurement> MergeCloseDetections(List<Measurement> meas, double eps)
         {
-            var merged = new List<Measurement>();
-            bool[] used = new bool[meas.Count];
-            var sorted = meas.OrderByDescending(m => m.Amplitude).ToList();
+            if (meas == null || meas.Count == 0)
+                return meas;
+            int n = meas.Count;
+            int[] clusterIds = new int[n];
+            for (int i = 0; i < n; i++)
+                clusterIds[i] = -1; // unassigned
 
-            for (int i = 0; i < sorted.Count; i++)
+            bool[] visited = new bool[n];
+            // Precompute Cartesian coordinates for each measurement.
+            var cart = new (double x, double y, double z)[n];
+            for (int i = 0; i < n; i++)
             {
-                if (used[i]) continue;
-                var current = sorted[i];
-                merged.Add(current);
-                used[i] = true;
+                cart[i] = ToCartesian(meas[i]);
+            }
 
-                for (int j = i + 1; j < sorted.Count; j++)
+            int clusterId = 0;
+            int minPts = 2; // For merging, even a single detection is its own cluster.
+
+            // DBSCAN clustering
+            for (int i = 0; i < n; i++)
+            {
+                if (!visited[i])
                 {
-                    if (used[j]) continue;
-                    double dist = CartesianDistance(current, sorted[j]);
-                    if (dist < maxDist)
-                        used[j] = true;
+                    visited[i] = true;
+                    List<int> neighborIndices = RegionQuery(cart, i, eps);
+                    if (neighborIndices.Count < minPts)
+                    {
+                        // Mark as noise (we’ll later treat noise as a single-point cluster)
+                        clusterIds[i] = 0;
+                    }
+                    else
+                    {
+                        clusterId++;
+                        ExpandCluster(cart, i, neighborIndices, clusterId, eps, minPts, visited, clusterIds);
+                    }
+                }
+            }
+
+            // Group measurements by cluster id.
+            Dictionary<int, List<Measurement>> clusters = new Dictionary<int, List<Measurement>>();
+            for (int i = 0; i < n; i++)
+            {
+                int cid = clusterIds[i];
+                if (!clusters.ContainsKey(cid))
+                    clusters[cid] = new List<Measurement>();
+                clusters[cid].Add(meas[i]);
+            }
+
+            List<Measurement> merged = new List<Measurement>();
+            foreach (var kvp in clusters)
+            {
+                var clusterMeasurements = kvp.Value;
+                if (clusterMeasurements.Count == 1)
+                {
+                    merged.Add(clusterMeasurements[0]);
+                }
+                else
+                {
+                    double sumWeight = 0.0;
+                    double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
+                    double bestAmplitude = double.MinValue;
+                    foreach (var m in clusterMeasurements)
+                    {
+                        double weight = m.Amplitude;
+                        sumWeight += weight;
+                        var (x, y, z) = ToCartesian(m);
+                        sumX += x * weight;
+                        sumY += y * weight;
+                        sumZ += z * weight;
+                        if (m.Amplitude > bestAmplitude)
+                            bestAmplitude = m.Amplitude;
+                    }
+                    double avgX = sumX / sumWeight;
+                    double avgY = sumY / sumWeight;
+                    double avgZ = sumZ / sumWeight;
+                    double mergedRange = Math.Sqrt(avgX * avgX + avgY * avgY + avgZ * avgZ);
+                    double mergedAz = Math.Atan2(avgY, avgX);
+                    double mergedEl = Math.Atan2(avgZ, Math.Sqrt(avgX * avgX + avgY * avgY));
+
+                    Measurement mergedMeasurement = new Measurement
+                    {
+                        Range = mergedRange,
+                        Azimuth = NormalizeAngle(mergedAz),
+                        Elevation = NormalizeAngle(mergedEl),
+                        Amplitude = bestAmplitude
+                    };
+                    merged.Add(mergedMeasurement);
                 }
             }
             return merged;
+        }
+
+        private List<int> RegionQuery((double x, double y, double z)[] cart, int index, double eps)
+        {
+            List<int> neighbors = new List<int>();
+            var point = cart[index];
+            for (int i = 0; i < cart.Length; i++)
+            {
+                if (Distance(cart[i], point) <= eps)
+                    neighbors.Add(i);
+            }
+            return neighbors;
+        }
+
+        private double Distance((double x, double y, double z) a, (double x, double y, double z) b)
+        {
+            double dx = a.x - b.x;
+            double dy = a.y - b.y;
+            double dz = a.z - b.z;
+            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        private void ExpandCluster((double x, double y, double z)[] cart, int index, List<int> neighborIndices, int clusterId, double eps, int minPts, bool[] visited, int[] clusterIds)
+        {
+            clusterIds[index] = clusterId;
+            Queue<int> seeds = new Queue<int>(neighborIndices);
+            while (seeds.Count > 0)
+            {
+                int current = seeds.Dequeue();
+                if (!visited[current])
+                {
+                    visited[current] = true;
+                    List<int> currentNeighbors = RegionQuery(cart, current, eps);
+                    if (currentNeighbors.Count >= minPts)
+                    {
+                        foreach (int n in currentNeighbors)
+                        {
+                            if (!seeds.Contains(n))
+                                seeds.Enqueue(n);
+                        }
+                    }
+                }
+                if (clusterIds[current] == -1)
+                {
+                    clusterIds[current] = clusterId;
+                }
+            }
         }
 
         private double CartesianDistance(Measurement a, Measurement b)
