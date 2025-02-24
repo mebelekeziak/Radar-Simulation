@@ -67,6 +67,8 @@ namespace RealRadarSim.Models
         // AESA mode flag.
         public bool UseAesaMode { get; set; } = false;
 
+        public bool UseReferenceSNRModel { get; set; } = false; 
+
         // New AESA mode properties.
         public int ConcurrentAesaBeams { get; set; } = 12;
         public List<AesaBeam> AesaBeams { get; private set; }
@@ -98,22 +100,22 @@ namespace RealRadarSim.Models
         /// <summary>
         /// Operating frequency of the radar (Hz).
         /// </summary>
-        public double FrequencyHz { get; set; } = 10e9; // 10 GHz default
+        public double FrequencyHz { get; set; } = 3e9; // 10 GHz default
 
         /// <summary>
         /// Transmit power in dBm (for demonstration).
         /// </summary>
-        public double TxPower_dBm { get; set; } = 80.0; // e.g. 100 W ~ 50 dBm
+        public double TxPower_dBm { get; set; } = 70.0; // e.g. 100 W ~ 50 dBm
 
         /// <summary>
         /// Antenna gain in dBi.
         /// </summary>
-        public double AntennaGain_dBi { get; set; } = 30.0;
+        public double AntennaGain_dBi { get; set; } = 101.0;
 
         /// <summary>
         /// System or miscellaneous losses in dB.
         /// </summary>
-        public double SystemLoss_dB { get; set; } = 6.0;
+        public double SystemLoss_dB { get; set; } = 3.0;
 
         /// <summary>
         /// Atmospheric attenuation in dB (one-way).
@@ -183,7 +185,7 @@ namespace RealRadarSim.Models
             double tiltOffsetDeg = 0.0,
             double lockRange = 50000.0,
             double lockSNRThreshold_dB = 5.0,
-            double pathLossExponent_dB = 40.0
+            double pathLossExponent_dB = 2.0
         )
         {
             MaxRange = maxRange;
@@ -504,38 +506,60 @@ namespace RealRadarSim.Models
 
         private double ComputeAdvancedRadarEquationSNR(double rcs, double range)
         {
-            // Speed of light
-            const double c = 3e8;
-            double lambda = c / FrequencyHz; // in meters
+            if (UseReferenceSNRModel)  
+            {
+                // 2-way atmospheric & weather losses + system losses (you can adjust as needed).
+                double otherLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB)
+                                        + SystemLoss_dB;
 
-            // Convert TxPower from dBm to dBW
-            double txPower_dBW = TxPower_dBm - 30.0;
-            // Gains
-            double totalGain_dB = 2.0 * AntennaGain_dBi; // Tx + Rx, if same antenna
-            // Basic two-way free space path
-            // 20log10( λ/(4π R) ) * 2
-            double fspl_dB = 20.0 * Math.Log10(lambda / (4.0 * Math.PI * range)) * 2.0;
+                // Simple parametric SNR model:
+                // snr_dB = snr0_dB
+                //        - pathLossExponent_dB * log10(range / referenceRange)
+                //        + 10 * log10(rcs / referenceRCS)
+                //        - otherLosses_dB
+                double rangeRatio_dB = 10.0 * Math.Log10(range / referenceRange);
+                double rcsRatio_dB = 10.0 * Math.Log10(rcs / ReferenceRCS);
 
-            // RCS
-            double rcs_dB = 10.0 * Math.Log10(rcs);
+                double snr_dB = snr0_dB
+                                - (pathLossExponent_dB * rangeRatio_dB)
+                                + rcsRatio_dB
+                                - otherLosses_dB;
 
-            // Additional one-way losses
-            double totalLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB) + SystemLoss_dB;
+                return snr_dB;
+            }
+            else
+            {
+                const double c = 3e8;
+                double lambda = c / FrequencyHz; // in meters
 
-            // Summation in dB
-            double rawRadarEq_dB = txPower_dBW
-                                   + totalGain_dB
-                                   + fspl_dB
-                                   + rcs_dB
-                                   - totalLosses_dB;
+                // Convert TxPower from dBm to dBW
+                double txPower_dBW = TxPower_dBm - 30.0;
 
-            double rangeFactor_dB = pathLossExponent_dB * Math.Log10(referenceRange / range);
-            double snrApprox_dB = snr0_dB + rangeFactor_dB + 10.0 * Math.Log10(rcs / referenceRCS);
+                // Tx + Rx antenna gains in dB
+                double totalGain_dB = 2.0 * AntennaGain_dBi;
 
-            double combinedSNR_dB = 0.5 * rawRadarEq_dB + 0.5 * snrApprox_dB;
+                // Two-way free-space path loss
+                double fspl_dB = 20.0 * Math.Log10(lambda / (4.0 * Math.PI * range)) * 2.0;
 
-            return combinedSNR_dB;
+                // RCS to dB
+                double rcs_dB = 10.0 * Math.Log10(rcs);
+
+                // Two-way atmospheric & weather losses + system losses
+                double totalLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB)
+                                        + SystemLoss_dB;
+
+                // Classic radar eq in dB
+                double rawRadarEq_dB = txPower_dBW
+                                       + totalGain_dB
+                                       + fspl_dB
+                                       + rcs_dB
+                                       - totalLosses_dB;
+
+                return rawRadarEq_dB;
+            }
         }
+
+
 
         private Measurement GenerateFalseAlarm()
         {
