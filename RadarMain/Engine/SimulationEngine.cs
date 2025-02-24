@@ -120,6 +120,21 @@ namespace RealRadarSim.Engine
                 // Path loss exponent in dB.
                 double pathLossExponent_dB = GetNumberOrDefault(radarTable, "pathLossExponent_dB", 40.0);
 
+                bool useDopplerProcessing = GetBoolOrDefault(radarTable, "useDopplerProcessing", false);
+                double velocityNoiseStd = GetNumberOrDefault(radarTable, "velocityNoiseStd", 1.0);
+                bool useDopplerCFAR = GetBoolOrDefault(radarTable, "useDopplerCFAR", false);
+                double dopplerCFARWindow = GetNumberOrDefault(radarTable, "dopplerCFARWindow", 150.0);
+                double dopplerCFARGuard = GetNumberOrDefault(radarTable, "dopplerCFARGuard", 20.0);
+                double dopplerCFARThresholdMultiplier = GetNumberOrDefault(radarTable, "dopplerCFARThresholdMultiplier", 6.0);
+
+                Radar.UseDopplerProcessing = useDopplerProcessing;
+                Radar.VelocityNoiseStd = velocityNoiseStd;
+                Radar.UseDopplerCFAR = useDopplerCFAR;
+                Radar.DopplerCFARWindow = dopplerCFARWindow;
+                Radar.DopplerCFARGuard = dopplerCFARGuard;
+                Radar.DopplerCFARThresholdMultiplier = dopplerCFARThresholdMultiplier;
+
+
                 Radar = new AdvancedRadar(
                     maxRange,
                     beamWidthDeg,
