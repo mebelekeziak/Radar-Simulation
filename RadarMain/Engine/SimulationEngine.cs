@@ -61,6 +61,7 @@ namespace RealRadarSim.Engine
                     if (configDyn.Type == DataType.Table)
                     {
                         var config = configDyn.Table;
+                        // Call a modified configuration routine that also outputs debug info
                         ConfigureFromLua(config);
                     }
                     else
@@ -70,7 +71,7 @@ namespace RealRadarSim.Engine
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("Error loading config.lua: " + ex.Message);
+                    System.IO.File.WriteAllText("lua_error.txt", $"Error loading config.lua: {ex.Message}");
                     InitializeDefaultConfiguration();
                 }
             }
@@ -129,14 +130,8 @@ namespace RealRadarSim.Engine
                 double FrequencyHz = GetNumberOrDefault(radarTable, "FrequencyHz", 3e9);
                 double TxPower_dBm = GetNumberOrDefault(radarTable, "TxPower_dBm", 70.0);
                 double AntennaGain_dBi = GetNumberOrDefault(radarTable, "AntennaGain_dBi", 101.0);
-                Radar.UseDopplerProcessing = useDopplerProcessing;
-                Radar.VelocityNoiseStd = velocityNoiseStd;
-                Radar.UseDopplerCFAR = useDopplerCFAR;
-                Radar.DopplerCFARWindow = dopplerCFARWindow;
-                Radar.DopplerCFARGuard = dopplerCFARGuard;
-                Radar.DopplerCFARThresholdMultiplier = dopplerCFARThresholdMultiplier;
 
-
+                // Instantiate Radar first
                 Radar = new AdvancedRadar(
                     maxRange,
                     beamWidthDeg,
@@ -164,6 +159,20 @@ namespace RealRadarSim.Engine
                     AntennaGain_dBi
                 );
 
+                // Now set Doppler processing properties on the instantiated Radar
+                Radar.UseDopplerProcessing = useDopplerProcessing;
+                Radar.VelocityNoiseStd = velocityNoiseStd;
+                Radar.UseDopplerCFAR = useDopplerCFAR;
+                Radar.DopplerCFARWindow = dopplerCFARWindow;
+                Radar.DopplerCFARGuard = dopplerCFARGuard;
+                Radar.DopplerCFARThresholdMultiplier = dopplerCFARThresholdMultiplier;
+
+                string debugText = $"[DEBUG] Loaded radar config values:\n" +
+                                   $"FrequencyHz: {FrequencyHz}\n" +
+                                   $"TxPower_dBm: {TxPower_dBm}\n" +
+                                   $"AntennaGain_dBi: {AntennaGain_dBi}\n";
+                System.IO.File.AppendAllText("lua_error.txt", debugText);
+
                 Radar.ShowAzimuthBars = showAzimuthBars;
                 Radar.ShowElevationBars = showElevationBars;
 
@@ -174,12 +183,12 @@ namespace RealRadarSim.Engine
                         : "mechanical";
                     Radar.UseAesaMode = (opMode == "aesa");
                 }
-
             }
             else
             {
                 InitializeDefaultConfiguration();
             }
+
 
             // Target configuration.
             var targetsDyn = config.Get("targets");

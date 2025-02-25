@@ -105,12 +105,12 @@ namespace RealRadarSim.Models
         /// <summary>
         /// Transmit power in dBm (for demonstration).
         /// </summary>
-        public double TxPower_dBm { get; set; } = 70.0; // e.g. 100 W ~ 50 dBm
+        public double TxPower_dBm { get; set; } = 90.0; // e.g. 100 W ~ 50 dBm
 
         /// <summary>
         /// Antenna gain in dBi.
         /// </summary>
-        public double AntennaGain_dBi { get; set; } = 101.0;
+        public double AntennaGain_dBi { get; set; } = 301.0;
 
         /// <summary>
         /// System or miscellaneous losses in dB.
@@ -187,8 +187,8 @@ namespace RealRadarSim.Models
             double lockSNRThreshold_dB = 5.0,
             double pathLossExponent_dB = 2.0,
             double frequencyHz = 3e9,
-            double txPower_dBm = 70.0,
-            double antennaGain_dBi = 101.0
+            double txPower_dBm = 90.0,
+            double antennaGain_dBi = 301.0
         )
         {
             MaxRange = maxRange;
