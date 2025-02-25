@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using MathNet.Numerics.Distributions;
@@ -186,6 +186,9 @@ namespace RealRadarSim.Models
             double lockRange = 50000.0,
             double lockSNRThreshold_dB = 5.0,
             double pathLossExponent_dB = 2.0
+            double frequencyHz = 3e9;
+            double txPower_dBm = 70.0;
+            double AntennaGain_dBi = 101.0;
         )
         {
             MaxRange = maxRange;
@@ -211,6 +214,10 @@ namespace RealRadarSim.Models
             AntennaAzimuthScanDegrees = antennaAzimuthScanDeg;
             TiltOffsetDeg = tiltOffsetDeg;
             this.lockRange = lockRange;
+            this.frequencyHz = frequencyHz;
+            this.TxPower_dBm = TxPower_dBm;
+            this.AntennaGain_dBi = AntennaGain_dBi;
+
 
             InitializeAircraftMode();
 
