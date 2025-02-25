@@ -40,8 +40,8 @@ namespace RealRadarSim.Tracking
             R = DenseMatrix.OfArray(new double[,]
             {
                 { 400 * 400,       0,              0 },
-                { 0,          0.05 * 0.05,         0 },
-                { 0,               0,       0.05 * 0.05 }
+                { 0,          0.1 * 0.1,         0 },
+                { 0,               0,       0.1 * 0.1 }
             });
         }
 
@@ -169,9 +169,9 @@ namespace RealRadarSim.Tracking
 
             // More aggressive adaptation for maneuvering targets.
             if (md2 > 9.0)
-                adaptiveSigmaJ = Math.Min(adaptiveSigmaJ * 1.1, sigmaJ * 5.0);
+                adaptiveSigmaJ = Math.Min(adaptiveSigmaJ * 1.2, sigmaJ * 10.0);
             else if (md2 < 3.0)
-                adaptiveSigmaJ = Math.Max(adaptiveSigmaJ * 0.9, sigmaJ);
+                adaptiveSigmaJ = Math.Max(adaptiveSigmaJ * 0.8, sigmaJ);
 
             // --- Covariance Update ---
             var I = DenseMatrix.CreateIdentity(9);
@@ -180,7 +180,7 @@ namespace RealRadarSim.Tracking
             Covariance = 0.5 * (Covariance + Covariance.Transpose());
 
             // Enforce a minimum variance on the diagonal.
-            double minVar = 1e-2;
+            double minVar = 400;
             for (int i = 0; i < Covariance.RowCount; i++)
             {
                 if (Covariance[i, i] < minVar)
