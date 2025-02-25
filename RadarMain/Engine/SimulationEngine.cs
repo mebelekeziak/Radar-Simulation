@@ -126,9 +126,9 @@ namespace RealRadarSim.Engine
                 double dopplerCFARWindow = GetNumberOrDefault(radarTable, "dopplerCFARWindow", 150.0);
                 double dopplerCFARGuard = GetNumberOrDefault(radarTable, "dopplerCFARGuard", 20.0);
                 double dopplerCFARThresholdMultiplier = GetNumberOrDefault(radarTable, "dopplerCFARThresholdMultiplier", 6.0);
-                double frequencyHz = GetNumberOrDefault(radarTable, "frequencyHz", 3e9);
-                double txPower_dBm = GetNumberOrDefault(radarTable, "txPower_dBm", 70.0);
-                double antennaGain_dBi = GetNumberOrDefault(radarTable, "antennaGain_dBi", 101.0);
+                double FrequencyHz = GetNumberOrDefault(radarTable, "FrequencyHz", 3e9);
+                double TxPower_dBm = GetNumberOrDefault(radarTable, "TxPower_dBm", 70.0);
+                double AntennaGain_dBi = GetNumberOrDefault(radarTable, "AntennaGain_dBi", 101.0);
                 Radar.UseDopplerProcessing = useDopplerProcessing;
                 Radar.VelocityNoiseStd = velocityNoiseStd;
                 Radar.UseDopplerCFAR = useDopplerCFAR;
@@ -159,9 +159,9 @@ namespace RealRadarSim.Engine
                     lockRange,
                     lockSNRThreshold_dB,
                     pathLossExponent_dB,
-                    frequencyHz,
-                    txPower_dBm,
-                    antennaGain_dBi
+                    FrequencyHz,
+                    TxPower_dBm,
+                    AntennaGain_dBi
                 );
 
                 Radar.ShowAzimuthBars = showAzimuthBars;

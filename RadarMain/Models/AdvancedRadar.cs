@@ -67,7 +67,7 @@ namespace RealRadarSim.Models
         // AESA mode flag.
         public bool UseAesaMode { get; set; } = false;
 
-        public bool UseReferenceSNRModel { get; set; } = false; 
+        public bool UseReferenceSNRModel { get; set; } = false;
 
         // New AESA mode properties.
         public int ConcurrentAesaBeams { get; set; } = 12;
@@ -185,10 +185,10 @@ namespace RealRadarSim.Models
             double tiltOffsetDeg = 0.0,
             double lockRange = 50000.0,
             double lockSNRThreshold_dB = 5.0,
-            double pathLossExponent_dB = 2.0
-            double frequencyHz = 3e9;
-            double txPower_dBm = 70.0;
-            double AntennaGain_dBi = 101.0;
+            double pathLossExponent_dB = 2.0,
+            double frequencyHz = 3e9,
+            double txPower_dBm = 70.0,
+            double antennaGain_dBi = 101.0
         )
         {
             MaxRange = maxRange;
@@ -214,10 +214,9 @@ namespace RealRadarSim.Models
             AntennaAzimuthScanDegrees = antennaAzimuthScanDeg;
             TiltOffsetDeg = tiltOffsetDeg;
             this.lockRange = lockRange;
-            this.frequencyHz = frequencyHz;
-            this.TxPower_dBm = TxPower_dBm;
-            this.AntennaGain_dBi = AntennaGain_dBi;
-
+            this.FrequencyHz = frequencyHz;
+            this.TxPower_dBm = txPower_dBm;
+            this.AntennaGain_dBi = antennaGain_dBi;
 
             InitializeAircraftMode();
 
@@ -510,10 +509,9 @@ namespace RealRadarSim.Models
             return measurement;
         }
 
-
         private double ComputeAdvancedRadarEquationSNR(double rcs, double range)
         {
-            if (UseReferenceSNRModel)  
+            if (UseReferenceSNRModel)
             {
                 // 2-way atmospheric & weather losses + system losses (you can adjust as needed).
                 double otherLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB)
@@ -565,8 +563,6 @@ namespace RealRadarSim.Models
                 return rawRadarEq_dB;
             }
         }
-
-
 
         private Measurement GenerateFalseAlarm()
         {
