@@ -188,7 +188,7 @@ namespace RealRadarSim.Models
             double pathLossExponent_dB = 2.0,
             double frequencyHz = 3e9,
             double txPower_dBm = 90.0,
-            double antennaGain_dBi = 301.0
+            double antennaGain_dBi = 101.0
         )
         {
             MaxRange = maxRange;
