@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using MathNet.Numerics.Distributions;
@@ -67,6 +67,8 @@ namespace RealRadarSim.Models
         // AESA mode flag.
         public bool UseAesaMode { get; set; } = false;
 
+        public bool UseReferenceSNRModel { get; set; } = false;
+
         // New AESA mode properties.
         public int ConcurrentAesaBeams { get; set; } = 12;
         public List<AesaBeam> AesaBeams { get; private set; }
@@ -77,6 +79,53 @@ namespace RealRadarSim.Models
         // LOCK-RELATED FIELDS
         private JPDA_Track lockedTrack = null;
         public bool IsLocked => (lockedTrack != null);
+
+        /// <summary>
+        /// Enable or disable Doppler measurements entirely.
+        /// </summary>
+        public bool UseDopplerProcessing { get; set; } = false;
+
+        /// <summary>
+        /// Standard deviation of velocity measurement noise (m/s).
+        /// </summary>
+        public double VelocityNoiseStd { get; set; } = 1.0;
+
+        // Doppler CFAR parameters
+        public bool UseDopplerCFAR { get; set; } = false;
+        public double DopplerCFARWindow { get; set; } = 150.0;   // m/s, for example
+        public double DopplerCFARGuard { get; set; } = 20.0;     // m/s
+        public double DopplerCFARThresholdMultiplier { get; set; } = 6.0;
+
+        /// Path loss
+        /// <summary>
+        /// Operating frequency of the radar (Hz).
+        /// </summary>
+        public double FrequencyHz { get; set; } = 3e9; // 10 GHz default
+
+        /// <summary>
+        /// Transmit power in dBm (for demonstration).
+        /// </summary>
+        public double TxPower_dBm { get; set; } = 90.0; // e.g. 100 W ~ 50 dBm
+
+        /// <summary>
+        /// Antenna gain in dBi.
+        /// </summary>
+        public double AntennaGain_dBi { get; set; } = 301.0;
+
+        /// <summary>
+        /// System or miscellaneous losses in dB.
+        /// </summary>
+        public double SystemLoss_dB { get; set; } = 3.0;
+
+        /// <summary>
+        /// Atmospheric attenuation in dB (one-way).
+        /// </summary>
+        public double AtmosphericLossOneWay_dB { get; set; } = 1.0;
+
+        /// <summary>
+        /// Weather attenuation in dB (one-way).
+        /// </summary>
+        public double WeatherLossOneWay_dB { get; set; } = 0.5;
 
         // Nested class representing a single AESA beam.
         public class AesaBeam
@@ -93,7 +142,7 @@ namespace RealRadarSim.Models
                 azPhase = initialAzPhase;
                 elPhase = initialElPhase;
             }
-
+          
             public void Update(double dt, double rotationSpeed, double elevationOscFreq)
             {
                 azPhase += rotationSpeed * dt;
@@ -136,7 +185,10 @@ namespace RealRadarSim.Models
             double tiltOffsetDeg = 0.0,
             double lockRange = 50000.0,
             double lockSNRThreshold_dB = 5.0,
-            double pathLossExponent_dB = 40.0
+            double pathLossExponent_dB = 2.0,
+            double frequencyHz = 3e9,
+            double txPower_dBm = 90.0,
+            double antennaGain_dBi = 301.0
         )
         {
             MaxRange = maxRange;
@@ -162,6 +214,9 @@ namespace RealRadarSim.Models
             AntennaAzimuthScanDegrees = antennaAzimuthScanDeg;
             TiltOffsetDeg = tiltOffsetDeg;
             this.lockRange = lockRange;
+            this.FrequencyHz = frequencyHz;
+            this.TxPower_dBm = txPower_dBm;
+            this.AntennaGain_dBi = antennaGain_dBi;
 
             InitializeAircraftMode();
 
@@ -342,7 +397,6 @@ namespace RealRadarSim.Models
             var cfarDetections = CFARFilterMeasurements(rawMeas);
             DebugLogger.LogCFAR($"CFAR Filter: {cfarDetections.Count} detections passed out of {rawMeas.Count} raw measurements.");
 
-            // --- NEW: Updated DBSCAN-based merging
             return MergeCloseDetections(cfarDetections, ClusterDistanceMeters);
         }
 
@@ -357,6 +411,7 @@ namespace RealRadarSim.Models
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
 
+            // Beam shape expands at short ranges so that we don't "over-narrow" the beam
             double nominalBeamWidth = BeamWidthRad;
             double maxEffectiveBeamWidth = 30.0 * Math.PI / 180.0;
             double effectiveBeamWidth = nominalBeamWidth;
@@ -368,6 +423,7 @@ namespace RealRadarSim.Models
                     effectiveBeamWidth = maxEffectiveBeamWidth;
             }
 
+            // Check if target is within the beam
             if (RadarType == "aircraft")
             {
                 if (UseAesaMode)
@@ -380,7 +436,7 @@ namespace RealRadarSim.Models
                             double diffAz = Math.Abs(NormalizeAngle(az - beam.CurrentAzimuth));
                             if (diffAz <= effectiveBeamWidth * 0.5)
                             {
-                                // Expand elevation beam width a bit for AESA
+                                // In AESA mode, let's assume we allow a bit more vertical coverage
                                 double effectiveElevationWidth = effectiveBeamWidth * 2.0;
                                 double diffEl = Math.Abs(NormalizeAngle(el - beam.CurrentElevation));
                                 if (diffEl <= effectiveElevationWidth * 0.5)
@@ -398,7 +454,8 @@ namespace RealRadarSim.Models
                     double diffAz = Math.Abs(NormalizeAngle(az - CurrentAzimuth));
                     if (diffAz > effectiveBeamWidth * 0.5) return null;
 
-                    double singleBarDeg = 2.0;
+                    // Single bar approach in elevation
+                    const double singleBarDeg = 2.0;
                     double barHalfRad = (singleBarDeg * Math.PI / 180.0) * 0.5;
                     double diffEl = Math.Abs(NormalizeAngle(el - CurrentElevation));
                     if (diffEl > barHalfRad) return null;
@@ -406,6 +463,7 @@ namespace RealRadarSim.Models
             }
             else
             {
+                // Typical rotating ground-based radar
                 double diffBeam = Math.Abs(NormalizeAngle(az - CurrentBeamAngle));
                 if (diffBeam > effectiveBeamWidth * 0.5) return null;
             }
@@ -429,27 +487,98 @@ namespace RealRadarSim.Models
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = az + Normal.Sample(rng, 0, angleNoiseBase);
             double elMeas = el + Normal.Sample(rng, 0, angleNoiseBase);
+
+            // Convert SNR back to linear scale and add random perturbation
+            snr_linear *= (nominalBeamWidth / effectiveBeamWidth);
             double amp = snr_linear + Normal.Sample(rng, 0, 0.05 * snr_linear);
+
+            // Optionally compute Doppler (radial velocity)
+            double radialVel = 0.0;
+            if (UseDopplerProcessing && tgt.State.Count >= 6)
+            {
+                double vx = tgt.State[3];
+                double vy = tgt.State[4];
+                double vz = tgt.State[5];
+                radialVel = (x * vx + y * vy + z * vz) / (r + 1e-6); // dot(los, velocity)
+                radialVel += Normal.Sample(rng, 0, VelocityNoiseStd);
+            }
 
             var measurement = new Measurement
             {
                 Range = rMeas,
                 Azimuth = NormalizeAngle(azMeas),
                 Elevation = NormalizeAngle(elMeas),
-                Amplitude = amp
+                Amplitude = amp,
+                RadialVelocity = radialVel
             };
 
             DebugLogger.LogMeasurement(
-                $"Generated target measurement: Range={measurement.Range:F2}, " +
-                $"Az={measurement.Azimuth:F2}, El={measurement.Elevation:F2}, Amp={measurement.Amplitude:F2}"
+                $"Generated target measurement: R = {measurement.Range:F2}, Az = {measurement.Azimuth:F2}, " +
+                $"El = {measurement.Elevation:F2}, Amp = {measurement.Amplitude:F2}, Vel = {measurement.RadialVelocity:F2}"
             );
             return measurement;
+        }
+
+        private double ComputeAdvancedRadarEquationSNR(double rcs, double range)
+        {
+            if (UseReferenceSNRModel)
+            {
+                // 2-way atmospheric & weather losses + system losses (you can adjust as needed).
+                double otherLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB)
+                                        + SystemLoss_dB;
+
+                // Simple parametric SNR model:
+                // snr_dB = snr0_dB
+                //        - pathLossExponent_dB * log10(range / referenceRange)
+                //        + 10 * log10(rcs / referenceRCS)
+                //        - otherLosses_dB
+                double rangeRatio_dB = 10.0 * Math.Log10(range / referenceRange);
+                double rcsRatio_dB = 10.0 * Math.Log10(rcs / ReferenceRCS);
+
+                double snr_dB = snr0_dB
+                                - (pathLossExponent_dB * rangeRatio_dB)
+                                + rcsRatio_dB
+                                - otherLosses_dB;
+
+                return snr_dB;
+            }
+            else
+            {
+                const double c = 3e8;
+                double lambda = c / FrequencyHz; // in meters
+
+                // Convert TxPower from dBm to dBW
+                double txPower_dBW = TxPower_dBm - 30.0;
+
+                // Tx + Rx antenna gains in dB
+                double totalGain_dB = 2.0 * AntennaGain_dBi;
+
+                // Two-way free-space path loss
+                double fspl_dB = 20.0 * Math.Log10(lambda / (4.0 * Math.PI * range)) * 2.0;
+
+                // RCS to dB
+                double rcs_dB = 10.0 * Math.Log10(rcs);
+
+                // Two-way atmospheric & weather losses + system losses
+                double totalLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB)
+                                        + SystemLoss_dB;
+
+                // Classic radar eq in dB
+                double rawRadarEq_dB = txPower_dBW
+                                       + totalGain_dB
+                                       + fspl_dB
+                                       + rcs_dB
+                                       - totalLosses_dB;
+
+                return rawRadarEq_dB;
+            }
         }
 
         private Measurement GenerateFalseAlarm()
         {
             double u = rng.NextDouble();
             double rFA = MaxRange * Math.Sqrt(u);
+
             double halfBeam = BeamWidthRad * 0.5;
 
             double mainAz;
@@ -465,24 +594,33 @@ namespace RealRadarSim.Models
 
             double azFA = NormalizeAngle(mainAz + (rng.NextDouble() * BeamWidthRad - halfBeam));
             double elCenter = (RadarType == "aircraft") ? CurrentElevation : 0.0;
-            double elFA = elCenter + Normal.Sample(rng, 0, angleNoiseBase * 2.0);
+            double elFA = elCenter + Normal.Sample(rng, 0, angleNoiseBase * 2);
             double rMeas = rFA + Normal.Sample(rng, 0, rangeNoiseBase * 0.5);
             if (rMeas < 1.0) rMeas = 1.0;
             double azMeas = NormalizeAngle(azFA + Normal.Sample(rng, 0, angleNoiseBase));
             double elMeas = NormalizeAngle(elFA + Normal.Sample(rng, 0, angleNoiseBase));
 
+            // Basic false alarm amplitude
             double falseAmp_linear = Math.Pow(10.0, requiredSNR_dB / 10.0)
                                       + Normal.Sample(rng, 0, 0.2 * Math.Pow(10.0, requiredSNR_dB / 10.0));
 
             if (falseAmp_linear < 0.0)
                 falseAmp_linear = 0.8 * Math.Pow(10.0, requiredSNR_dB / 10.0);
 
+            // Doppler for false alarms can be random if Doppler is enabled
+            double radialVel = 0.0;
+            if (UseDopplerProcessing)
+            {
+                radialVel = Normal.Sample(rng, 0, 100.0); // random false alarm velocity
+            }
+
             return new Measurement
             {
                 Range = rMeas,
                 Azimuth = azMeas,
                 Elevation = elMeas,
-                Amplitude = falseAmp_linear
+                Amplitude = falseAmp_linear,
+                RadialVelocity = radialVel
             };
         }
 
@@ -496,8 +634,8 @@ namespace RealRadarSim.Models
             {
                 Measurement cut = sorted[i];
                 double cutRange = cut.Range;
-                var training = new List<double>();
 
+                var training = new List<double>();
                 foreach (var neighbor in sorted)
                 {
                     if (ReferenceEquals(neighbor, cut)) continue;
@@ -507,17 +645,16 @@ namespace RealRadarSim.Models
                 }
 
                 DebugLogger.LogCFAR(
-                    $"CFAR - idx={i}: Range={cutRange:F2}, Amp={cut.Amplitude:F2}, " +
-                    $"TrainingCount={training.Count}"
+                    $"CFAR - Index {i}: R={cutRange:F2}, Amp={cut.Amplitude:F2}, TrainingCount={training.Count}"
                 );
 
                 if (training.Count == 0)
                 {
+                    // Fallback threshold
                     double fallbackThreshold = Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.5;
                     passed[i] = (cut.Amplitude > fallbackThreshold);
                     DebugLogger.LogCFAR(
-                        $"CFAR - idx={i}: No training data. " +
-                        $"Fallback threshold={fallbackThreshold:F2}. " +
+                        $"CFAR - Index {i}: No training data, fallback threshold={fallbackThreshold:F2}, " +
                         $"Decision={(passed[i] ? "Pass" : "Reject")}."
                     );
                     continue;
@@ -533,8 +670,61 @@ namespace RealRadarSim.Models
                 passed[i] = (cut.Amplitude >= threshold);
 
                 DebugLogger.LogCFAR(
-                    $"CFAR - idx={i}: NoiseEst={noiseEstimate:F2}, " +
-                    $"Threshold={threshold:F2}, Amp={cut.Amplitude:F2}, " +
+                    $"CFAR - Index {i}: NoiseEst={noiseEstimate:F2}, Threshold={threshold:F2}, " +
+                    $"Decision={(passed[i] ? "Pass" : "Reject")}."
+                );
+            }
+
+            for (int i = 0; i < sorted.Count; i++)
+            {
+                if (passed[i])
+                    results.Add(sorted[i]);
+            }
+
+            return results;
+        }
+
+        private List<Measurement> DopplerCFARFilterMeasurements(List<Measurement> measurements)
+        {
+            // If no velocity data, just return
+            if (!measurements.Any(m => UseDopplerProcessing))
+                return measurements;
+
+            var sorted = measurements.OrderBy(m => m.RadialVelocity).ToList();
+            var results = new List<Measurement>();
+            bool[] passed = new bool[sorted.Count];
+
+            for (int i = 0; i < sorted.Count; i++)
+            {
+                Measurement cut = sorted[i];
+                double cutVel = cut.RadialVelocity;
+
+                var training = new List<double>();
+                foreach (var neighbor in sorted)
+                {
+                    if (ReferenceEquals(neighbor, cut)) continue;
+                    double dv = Math.Abs(neighbor.RadialVelocity - cutVel);
+                    if (dv <= DopplerCFARWindow && dv > DopplerCFARGuard)
+                        training.Add(neighbor.Amplitude);
+                }
+
+                if (training.Count == 0)
+                {
+                    // Fallback threshold
+                    double fallbackThreshold = Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.0;
+                    passed[i] = (cut.Amplitude > fallbackThreshold);
+                    continue;
+                }
+
+                training.Sort();
+                int K = (int)(0.75 * training.Count);
+                if (K >= training.Count) K = training.Count - 1;
+                if (K < 0) K = 0;
+                double noiseEstimate = training[K];
+                double threshold = DopplerCFARThresholdMultiplier * noiseEstimate;
+                passed[i] = (cut.Amplitude >= threshold);
+                DebugLogger.LogCFAR(
+                    $"CFAR - Index {i}: NoiseEst={noiseEstimate:F2}, Threshold={threshold:F2}, " +
                     $"Decision={(passed[i] ? "Pass" : "Reject")}."
                 );
             }
