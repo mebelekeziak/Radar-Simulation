@@ -9,7 +9,6 @@
         public double Azimuth;
         public double Elevation;
         public double Amplitude;
-        public double RadialVelocity;
-        public string TargetName;
+        public string TargetName; 
     }
 }
