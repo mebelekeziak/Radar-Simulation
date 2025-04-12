@@ -513,29 +513,38 @@ namespace RealRadarSim.Models
         {
             if (UseReferenceSNRModel)
             {
-                // 2-way atmospheric & weather losses + system losses (you can adjust as needed).
+                // === REFERENCE MODEL BRANCH === //
                 double otherLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB)
                                         + SystemLoss_dB;
 
-                // Simple parametric SNR model:
-                // snr_dB = snr0_dB
-                //        - pathLossExponent_dB * log10(range / referenceRange)
-                //        + 10 * log10(rcs / referenceRCS)
-                //        - otherLosses_dB
                 double rangeRatio_dB = 10.0 * Math.Log10(range / referenceRange);
                 double rcsRatio_dB = 10.0 * Math.Log10(rcs / ReferenceRCS);
 
-                double snr_dB = snr0_dB
-                                - (pathLossExponent_dB * rangeRatio_dB)
-                                + rcsRatio_dB
-                                - otherLosses_dB;
+                double snr_dB =
+                    snr0_dB
+                    - (pathLossExponent_dB * rangeRatio_dB)
+                    + rcsRatio_dB
+                    - otherLosses_dB;
 
                 return snr_dB;
             }
             else
             {
-                const double c = 3e8;
-                double lambda = c / FrequencyHz; // in meters
+                // === CLASSICAL RADAR EQUATION BRANCH (with noise accounting) === //
+
+                // Basic constants:
+                const double c = 3.0e8;     // Speed of light in m/s
+                const double k_dBW = -228.6; // Boltzmann constant in dBW/K/Hz (approx.)
+                const double T0_dB = 24.6;   // 10 * log10(290 K) ~ 24.6 dB
+                                             // Example assumed receiver bandwidth = 1 MHz -> 10*log10(1e6) = 60 dB
+                const double bandwidth_dB = 60.0;
+                // Assumed receiver noise figure (dB):
+                const double noiseFigure_dB = 5.0;
+                // Number of pulses integrated (for integration gain):
+                const double pulseCount = 10.0;
+
+                // 1) Compute the raw power at the receiver via classical radar equation:
+                double lambda = c / FrequencyHz; // wavelength in meters
 
                 // Convert TxPower from dBm to dBW
                 double txPower_dBW = TxPower_dBm - 30.0;
@@ -544,25 +553,39 @@ namespace RealRadarSim.Models
                 double totalGain_dB = 2.0 * AntennaGain_dBi;
 
                 // Two-way free-space path loss
+                // fspl_dB = 20 log10(λ / (4πR)) * 2
                 double fspl_dB = 20.0 * Math.Log10(lambda / (4.0 * Math.PI * range)) * 2.0;
 
-                // RCS to dB
+                // RCS in dB
                 double rcs_dB = 10.0 * Math.Log10(rcs);
 
                 // Two-way atmospheric & weather losses + system losses
                 double totalLosses_dB = 2.0 * (AtmosphericLossOneWay_dB + WeatherLossOneWay_dB)
                                         + SystemLoss_dB;
 
-                // Classic radar eq in dB
+                // This is effectively the received signal power (dBW),
+                // ignoring thermal noise so far.
                 double rawRadarEq_dB = txPower_dBW
                                        + totalGain_dB
                                        + fspl_dB
                                        + rcs_dB
                                        - totalLosses_dB;
 
-                return rawRadarEq_dB;
+                // 2) Compute thermal noise power in dBW:
+                //    noisePower_dBW = k_dBW + T0_dB + bandwidth_dB + noiseFigure_dB
+                double noisePower_dBW = k_dBW + T0_dB + bandwidth_dB + noiseFigure_dB;
+
+                // 3) Add integration gain if we assume noncoherent or coherent sum:
+                //    integrationGain_dB = 10 * log10(pulseCount)
+                double integrationGain_dB = 10.0 * Math.Log10(pulseCount);
+
+                // 4) Final advanced SNR (dB) = (Signal Power) - (Noise Power) + (Integration Gain)
+                double advancedSNR_dB = rawRadarEq_dB - noisePower_dBW + integrationGain_dB;
+
+                return advancedSNR_dB;
             }
         }
+
 
         private Measurement GenerateFalseAlarm()
         {
