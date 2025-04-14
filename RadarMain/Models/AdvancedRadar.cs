@@ -696,7 +696,8 @@ namespace RealRadarSim.Models
             return results;
         }
 
-        private List<Measurement> DopplerCFARFilterMeasurements(List<Measurement> measurements)
+        // Not used anywhere in code
+        private List<Measurement> DopplerCFARFilterMeasurements(List<Measurement> measurements) 
         {
             // If no velocity data, just return
             if (!measurements.Any(m => UseDopplerProcessing))
