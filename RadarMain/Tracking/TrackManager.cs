@@ -261,7 +261,7 @@ namespace RealRadarSim.Tracking
             // DBSCAN parameters.
             int clusterId = 0;
             int minPts = 1;       // Even a single track can form its own cluster.
-            double eps = 50.0;    // Merge threshold in meters (adjustable as needed).
+            double eps = MaxTrackMergeDist;    // now in lua
 
             // Perform DBSCAN clustering.
             for (int i = 0; i < n; i++)
@@ -532,6 +532,12 @@ namespace RealRadarSim.Tracking
 
         private void CreateOrUpdateCandidate(Measurement m)
         {
+            foreach (var trk in tracks)
+            {
+                if (MeasurementTrackDistance(m, trk) < CandidateMergeDistance)
+                    return;
+            }
+
             double bestDist = double.MaxValue;
             CandidateTrack bestCandidate = null;
             foreach (var cand in candidates)
@@ -569,6 +575,25 @@ namespace RealRadarSim.Tracking
             double dz = zA - zB;
             return Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
+
+        // Quick 3D distance between a raw measurement and a confirmed track
+        private double MeasurementTrackDistance(Measurement m, JPDA_Track track)
+        {
+            // track.Filter.State holds [px, py, pz, vx, vy, vz, ax, ay, az]
+            var p = track.Filter.State;
+            double xT = p[0], yT = p[1], zT = p[2];
+
+            // Convert spherical measurement to Cartesian
+            double xM = m.Range * Math.Cos(m.Elevation) * Math.Cos(m.Azimuth);
+            double yM = m.Range * Math.Cos(m.Elevation) * Math.Sin(m.Azimuth);
+            double zM = m.Range * Math.Sin(m.Elevation);
+
+            double dx = xM - xT;
+            double dy = yM - yT;
+            double dz = zM - zT;
+            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
 
         private void ConfirmCandidates()
         {
