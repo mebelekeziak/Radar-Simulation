@@ -26,4 +26,8 @@
     <EmbeddedResource Include="Assets\Images\plane.png" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Missile\" />
+  </ItemGroup>
+
 </Project>

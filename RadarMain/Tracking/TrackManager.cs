@@ -234,57 +234,72 @@ namespace RealRadarSim.Tracking
         }
 
         #region DBSCAN-Based Track Merging Methods
+        /* ---------------------------------------------------------------------------
+         * Uncertainty–aware DBSCAN + Information–space fusion
+         * ---------------------------------------------------------------------------
+         *  • Distance metric: 3‑D Mahalanobis distance that accounts for the summed
+         *    position covariance of the two tracks      d² = Δxᵀ (P₁ₚ + P₂ₚ)⁻¹ Δx
+         *  • Threshold: χ² inv‑cdf for 3 DOF at the user‑tunable GatingProbability
+         *    (defaults to 0.997 → 16.27).  A hard Euclidean guard
+         *    (MaxTrackMergeDist²) is also applied to avoid fusing far–apart targets.
+         *  • Fusion: true information‑filter fusion performed **once per cluster**
+         *    (∑P⁻¹, ∑P⁻¹x).  Keeps numerics stable and avoids order–dependent drift.
+         *  • Existence probability: takes the maximum over the cluster, preserving
+         *    the strongest belief.
+         * -------------------------------------------------------------------------*/
 
         /// <summary>
-        /// Clusters tracks using DBSCAN and fuses each cluster’s tracks via Gaussian fusion.
+        /// Cluster confirmed tracks with an uncertainty‑aware DBSCAN and fuse
+        /// every cluster into a single Gaussian track in information space.
         /// </summary>
         private void MergeTracksDBSCAN()
         {
             int n = tracks.Count;
-            if (n == 0)
+            if (n < 2)           // nothing to do
                 return;
 
-            // Initialize cluster IDs (-1 means unassigned) and visited flag for each track.
-            int[] clusterIds = new int[n];
+            /* ----------  pre‑compute position means & covariances  ---------- */
+            var pos = new Vector<double>[n];      // Cartesian position (3×1)
+            var posCov = new Matrix<double>[n];      // Position cov. (3×3)
             for (int i = 0; i < n; i++)
-                clusterIds[i] = -1;
+            {
+                pos[i] = tracks[i].Filter.State.SubVector(0, 3);
+                posCov[i] = tracks[i].Filter.Covariance.SubMatrix(0, 3, 0, 3);
+            }
+
+            /* ----------  DBSCAN parameters  ---------- */
+            double epsMahalanobisSq = new ChiSquared(3)
+                .InverseCumulativeDistribution(GatingProbability);        // χ² threshold
+            double maxEuclidSq = MaxTrackMergeDist * MaxTrackMergeDist;   // hard guard
+            int minPts = 1;                                       // cluster size
+
+            /* ----------  DBSCAN main loop  ---------- */
+            int[] clusterIds = Enumerable.Repeat(-1, n).ToArray();
             bool[] visited = new bool[n];
-
-            // Extract each track’s position (first three state elements).
-            var positions = new (double x, double y, double z)[n];
-            for (int i = 0; i < n; i++)
-            {
-                var pos = tracks[i].Filter.State.SubVector(0, 3);
-                positions[i] = (pos[0], pos[1], pos[2]);
-            }
-
-            // DBSCAN parameters.
             int clusterId = 0;
-            int minPts = 1;       // Even a single track can form its own cluster.
-            double eps = MaxTrackMergeDist;    // now in lua
 
-            // Perform DBSCAN clustering.
             for (int i = 0; i < n; i++)
             {
-                if (!visited[i])
+                if (visited[i]) continue;
+                visited[i] = true;
+
+                var neighbors = RegionQueryMahalanobis(pos, posCov, i,
+                                                       epsMahalanobisSq, maxEuclidSq);
+
+                if (neighbors.Count < minPts)
                 {
-                    visited[i] = true;
-                    List<int> neighborIndices = RegionQueryPositions(positions, i, eps);
-                    if (neighborIndices.Count < minPts)
-                    {
-                        // Mark as noise (we treat noise as its own cluster, id 0).
-                        clusterIds[i] = 0;
-                    }
-                    else
-                    {
-                        clusterId++;
-                        ExpandClusterPositions(positions, i, neighborIndices, clusterId, eps, minPts, visited, clusterIds);
-                    }
+                    clusterIds[i] = 0;          // noise
+                    continue;
                 }
+
+                clusterId++;
+                ExpandClusterMahalanobis(i, neighbors, clusterId,
+                                         epsMahalanobisSq, maxEuclidSq,
+                                         visited, clusterIds, pos, posCov);
             }
 
-            // Group tracks by their cluster ID.
-            Dictionary<int, List<JPDA_Track>> clusters = new Dictionary<int, List<JPDA_Track>>();
+            /* ----------  fuse each cluster in information space  ---------- */
+            var clusters = new Dictionary<int, List<JPDA_Track>>();
             for (int i = 0; i < n; i++)
             {
                 int cid = clusterIds[i];
@@ -293,111 +308,124 @@ namespace RealRadarSim.Tracking
                 clusters[cid].Add(tracks[i]);
             }
 
-            // For each cluster, fuse the tracks using Gaussian fusion.
-            List<JPDA_Track> mergedTracks = new List<JPDA_Track>();
-            foreach (var kvp in clusters)
+            var mergedTracks = new List<JPDA_Track>();
+            foreach (var kv in clusters)
             {
-                var clusterTracks = kvp.Value;
-                if (clusterTracks.Count == 1)
-                {
-                    mergedTracks.Add(clusterTracks[0]);
-                }
-                else
-                {
-                    // Fuse all tracks in the cluster iteratively.
-                    JPDA_Track mergedTrack = clusterTracks[0];
-                    for (int i = 1; i < clusterTracks.Count; i++)
-                    {
-                        mergedTrack = FuseTracks(mergedTrack, clusterTracks[i]);
-                    }
-                    mergedTracks.Add(mergedTrack);
-                }
+                var cl = kv.Value;
+                mergedTracks.Add(cl.Count == 1 ? cl[0] : FuseTrackCluster(cl));
             }
 
-            // Replace the current track list with the merged tracks.
-            tracks = mergedTracks;
+            tracks = mergedTracks;   // replace with fused set
         }
 
+        /* ------------------------------------------------------------------ */
+        /* ---------------------  helper functions  ------------------------- */
+        /* ------------------------------------------------------------------ */
+
         /// <summary>
-        /// Returns a list of indices for tracks within 'eps' distance.
+        /// Return indices whose Mahalanobis distance to <paramref name="index"/>
+        /// is within the chi‑square threshold *and* inside MaxTrackMergeDist.
+        /// The self‑index is included (DBSCAN convention).
         /// </summary>
-        private List<int> RegionQueryPositions((double x, double y, double z)[] positions, int index, double eps)
+        private List<int> RegionQueryMahalanobis(
+            Vector<double>[] pos,
+            Matrix<double>[] posCov,
+            int index,
+            double epsMahalanobisSq,
+            double maxEuclidSq)
         {
-            List<int> neighbors = new List<int>();
-            var point = positions[index];
-            for (int i = 0; i < positions.Length; i++)
+            var neighbors = new List<int>();
+            for (int j = 0; j < pos.Length; j++)
             {
-                if (Distance(point, positions[i]) <= eps)
-                    neighbors.Add(i);
+                /* quick Euclidean reject test */
+                Vector<double> d = pos[j] - pos[index];
+                double euclidSq = d.DotProduct(d);
+                if (euclidSq > maxEuclidSq) continue;
+
+                /* Mahalanobis distance squared */
+                Matrix<double> S = posCov[index] + posCov[j];
+                for (int k = 0; k < 3; k++) S[k, k] += 1e-6;   // tiny regularisation
+                double d2 = (d.ToRowMatrix() * S.Inverse() * d.ToColumnMatrix())[0, 0];
+
+                if (d2 <= epsMahalanobisSq)
+                    neighbors.Add(j);
             }
             return neighbors;
         }
 
         /// <summary>
-        /// Computes the Euclidean distance between two 3D points.
+        /// Recursive region growth for DBSCAN (Mahalanobis metric).
         /// </summary>
-        private double Distance((double x, double y, double z) a, (double x, double y, double z) b)
-        {
-            double dx = a.x - b.x;
-            double dy = a.y - b.y;
-            double dz = a.z - b.z;
-            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
-        }
-
-        /// <summary>
-        /// Expands the DBSCAN cluster for the given track index.
-        /// </summary>
-        private void ExpandClusterPositions(
-            (double x, double y, double z)[] positions,
+        private void ExpandClusterMahalanobis(
             int index,
             List<int> neighborIndices,
             int clusterId,
-            double eps,
-            int minPts,
+            double epsMahalanobisSq,
+            double maxEuclidSq,
             bool[] visited,
-            int[] clusterIds)
+            int[] clusterIds,
+            Vector<double>[] pos,
+            Matrix<double>[] posCov)
         {
             clusterIds[index] = clusterId;
-            Queue<int> seeds = new Queue<int>(neighborIndices);
+            var seeds = new Queue<int>(neighborIndices);
+
             while (seeds.Count > 0)
             {
                 int current = seeds.Dequeue();
+
                 if (!visited[current])
                 {
                     visited[current] = true;
-                    List<int> currentNeighbors = RegionQueryPositions(positions, current, eps);
-                    if (currentNeighbors.Count >= minPts)
+                    var currentNeighbors = RegionQueryMahalanobis(
+                                               pos, posCov, current,
+                                               epsMahalanobisSq, maxEuclidSq);
+
+                    if (currentNeighbors.Count > 0)          // minPts = 1
                     {
-                        foreach (int n in currentNeighbors)
-                        {
+                        foreach (var n in currentNeighbors)
                             if (!seeds.Contains(n))
                                 seeds.Enqueue(n);
-                        }
                     }
                 }
+
                 if (clusterIds[current] == -1)
                     clusterIds[current] = clusterId;
             }
         }
 
         /// <summary>
-        /// Fuses two tracks using Gaussian fusion.
+        /// Fuse all tracks in a cluster in information space (∑P⁻¹, ∑P⁻¹x).
+        /// Numerical order no longer matters and the result is the ML Gaussian.
         /// </summary>
-        private JPDA_Track FuseTracks(JPDA_Track t1, JPDA_Track t2)
+        private JPDA_Track FuseTrackCluster(List<JPDA_Track> cluster)
         {
-            Matrix<double> P1Inv = t1.Filter.Covariance.Inverse();
-            Matrix<double> P2Inv = t2.Filter.Covariance.Inverse();
-            Matrix<double> fusedCov = (P1Inv + P2Inv).Inverse();
-            Vector<double> fusedState = fusedCov * (P1Inv * t1.Filter.State + P2Inv * t2.Filter.State);
+            /* accumulate information matrices/vectors */
+            Matrix<double> Omega = DenseMatrix.Create(9, 9, 0.0);   // ∑P⁻¹
+            Vector<double> xi = DenseVector.Create(9, 0.0);      // ∑P⁻¹ x
+            double maxExistProb = 0.0;
 
-            // Update one track with the fused state and covariance.
-            t2.Filter.State = fusedState;
-            t2.Filter.Covariance = fusedCov;
-            t2.ExistenceProb = Math.Max(t2.ExistenceProb, t1.ExistenceProb);
-            return t2;
+            foreach (var trk in cluster)
+            {
+                Matrix<double> PInv = trk.Filter.Covariance.Inverse();
+                Omega += PInv;
+                xi += PInv * trk.Filter.State;
+                if (trk.ExistenceProb > maxExistProb)
+                    maxExistProb = trk.ExistenceProb;
+            }
+
+            Matrix<double> fusedCov = Omega.Inverse();
+            Vector<double> fusedState = fusedCov * xi;
+
+            /* write back into a representative track (first in the list) */
+            JPDA_Track rep = cluster[0];
+            rep.Filter.State = fusedState;
+            rep.Filter.Covariance = fusedCov;
+            rep.ExistenceProb = maxExistProb;
+            return rep;
         }
-
         #endregion
+
 
         #region Helper Methods
 
