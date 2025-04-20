@@ -96,6 +96,16 @@ namespace RealRadarSim.Models
         public double DopplerCFARGuard { get; set; } = 20.0;     // m/s
         public double DopplerCFARThresholdMultiplier { get; set; } = 6.0;
 
+        /// <summary>
+        /// Alias for DopplerCFARWindow, used by DopplerCFARFilterMeasurements()
+        // </summary>
+        public double DopplerCFARWindowWidth => DopplerCFARWindow;
+
+        /// <summary>
+        /// Alias for DopplerCFARGuard, used by DopplerCFARFilterMeasurements()
+        // </summary>
+        public double DopplerCFARGuardWidth => DopplerCFARGuard;
+
         /// Path loss
         /// <summary>
         /// Operating frequency of the radar (Hz).
