@@ -14,6 +14,30 @@ namespace RealRadarSim.Tracking
     /// </summary>
     public class TrackManager
     {
+
+        // ---------------------------------------------------------------------
+        //  Loose‑gate rescue for “lost” fast movers
+        // ---------------------------------------------------------------------
+        private const double RescueGateChi2 = 25.0;   // χ²(3 DOF) ≈ 99.96% coverage
+
+        /// <summary>
+        /// Returns true if measurement m still fits track trk under the loose gate.
+        /// Uses only the 3‑D position covariance.
+        /// </summary>
+        private bool FitsLoosePositionGate(Measurement m, JPDA_Track trk)
+        {
+            // Convert spherical meas → Cartesian
+            var z = MeasurementToCartesian(m);        // Vector<double>[px,py,pz]
+            var x = trk.Filter.State.SubVector(0, 3);
+
+            var diff = z - x;
+            var Ppos = trk.Filter.Covariance.SubMatrix(0, 3, 0, 3).Clone();
+            for (int i = 0; i < 3; i++) Ppos[i, i] += 1e-6;  // stabilize
+
+            double d2 = (diff.ToRowMatrix() * Ppos.Inverse() * diff.ToColumnMatrix())[0, 0];
+            return d2 < RescueGateChi2;
+        }
+
         private List<JPDA_Track> tracks = new List<JPDA_Track>();
         private List<CandidateTrack> candidates = new List<CandidateTrack>();
         private int nextTrackId = 1;
@@ -42,11 +66,6 @@ namespace RealRadarSim.Tracking
         public double ExistenceIncreaseGain { get; set; } = 0.2;
         public double ExistenceDecayFactor { get; set; } = 0.995;
 
-        // ---------------------------------------------------------------------
-        //  Loose gate used to rescue lost tracks and stop “one‑scan” duplicates
-        // ---------------------------------------------------------------------
-        private const double RescueGateChi2 = 25.0;     // ≈ χ²(3 DOF, P≈0.9996)
-
         /// Percentage of slant range that we are willing to fuse at long range.
         /// 0.03 → 3 % of 60 km ≈ 1.8 km.
         public double RangeMergeFraction { get; set; } = 0.03;
@@ -62,7 +81,7 @@ namespace RealRadarSim.Tracking
         // ---------------------------------------------------------------------
         //  Duplicate‑track suppression helpers
         // ---------------------------------------------------------------------
-        private const double DuplicateGateThreshold = 16.27;          // χ²(3 dof, P=0.997)
+        private const double BaseDuplicateGateThreshold = 16.27;          // χ²(3 dof, P=0.997)
 
         /// <summary>
         /// Returns true if <paramref name="initState"/> would be a duplicate of an
@@ -74,16 +93,25 @@ namespace RealRadarSim.Tracking
 
             foreach (var trk in tracks)
             {
+                // a) positional Mahalanobis distance
                 Vector<double> d = pos - trk.Filter.State.SubVector(0, 3);
-
-                // innovation covariance for the 3‑D position
-                Matrix<double> S = initCov.SubMatrix(0, 3, 0, 3) +
-                                   trk.Filter.Covariance.SubMatrix(0, 3, 0, 3);
-                for (int k = 0; k < 3; ++k) S[k, k] += 1e-6;          // small stabiliser
-
+                Matrix<double> S = initCov.SubMatrix(0, 3, 0, 3)
+                                   + trk.Filter.Covariance.SubMatrix(0, 3, 0, 3);
+                for (int k = 0; k < 3; ++k) S[k, k] += 1e-6;
                 double d2 = (d.ToRowMatrix() * S.Inverse() * d.ToColumnMatrix())[0, 0];
-                if (d2 < DuplicateGateThreshold) return true;         // inside 3‑σ gate?
+
+                // b) compute the same dynamic & existence factors you use elsewhere
+                double speed = trk.Filter.State.SubVector(3, 3).L2Norm();
+                double dynamicFactor = 1.0 + 0.5 * (speed / 100.0);
+                double existenceFactor = (trk.ExistenceProb > 0.7) ? 1.5 : 1.0;
+
+                // c) adaptive threshold
+                double threshold = BaseDuplicateGateThreshold * dynamicFactor * existenceFactor;
+
+                if (d2 < threshold)
+                    return true;
             }
+
             return false;
         }
 
@@ -589,33 +617,6 @@ namespace RealRadarSim.Tracking
 
         #region Candidate Track Management
 
-        /// <summary>
-        /// True if measurement <paramref name="m"/> still fits track <paramref name="trk"/>
-        /// under a loose 3‑D Mahalanobis gate.  Uses only position (no Doppler).
-        /// </summary>
-        /// True if the raw measurement m is still compatible with track trk
-        /// under a *speed‑adaptive* 3‑D Mahalanobis gate (position only).
-        private bool FitsLoosePositionGate(Measurement m, JPDA_Track trk)
-        {
-            // 1) measurement → Cartesian
-            Vector<double> zCart = MeasurementToCartesian(m);
-            Vector<double> xCart = trk.Filter.State.SubVector(0, 3);
-            Vector<double> diff = zCart - xCart;
-
-            // 2) innovation covariance (position block only)
-            Matrix<double> Ppos = trk.Filter.Covariance.SubMatrix(0, 3, 0, 3).Clone();
-            for (int k = 0; k < 3; ++k) Ppos[k, k] += 1e-6;           // regulariser
-
-            // 3) Mahalanobis distance
-            double d2 = (diff.ToRowMatrix() * Ppos.Inverse() * diff.ToColumnMatrix())[0, 0];
-
-            // 4) dynamic gate: χ²(3 dof, 0.9996) ≈ 25 × (1 + |v|/250)
-            double speed = trk.Filter.State.SubVector(3, 3).L2Norm();   // m/s
-            double gateChi = 25.0 * (1.0 + speed / 250.0);
-
-            return d2 < gateChi;
-        }
-
         private void CreateOrUpdateCandidates(List<Measurement> measurements, double[] beta0)
         {
             // Mark measurements that are well-associated with existing tracks.
@@ -636,6 +637,13 @@ namespace RealRadarSim.Tracking
 
         private void CreateOrUpdateCandidate(Measurement m)
         {
+            // Convert to the 3‑D vector 
+            Vector<double> measVec = DenseVector.OfArray(new double[] { m.Range, m.Azimuth, m.Elevation });
+            // Build a 9×9 cov with your same initial STD settings
+            var (initState, initCov) = MeasurementToInitialState(measVec);
+            if (IsDuplicateTrack(initState, initCov))
+                return;   // right here — no candidate ever created
+
             /* -------------------------------------------------------------
              * 1)  FIRST: can this measurement still belong to an EXISTING
              *     track under a *loose* 3‑σ position gate?  If yes we feed
