@@ -186,9 +186,9 @@ namespace RealRadarSim.Models
             double angleNoiseBase,
             Random rng,
             double cfarWindowWidth = 5000.0,
-            double cfarGuardWidth = 300.0,
+            double cfarGuardWidth = 800.0,
             double cfarThresholdMultiplier = 8.0,
-            double clusterDistanceMeters = 600.0,
+            double clusterDistanceMeters = 1600.0,
             string radarType = "aircraft",
             int antennaHeight = 1,
             double antennaAzimuthScanDeg = 140.0,
@@ -782,28 +782,57 @@ namespace RealRadarSim.Models
             return results;
         }
 
-        private List<Measurement> MergeCloseDetections(List<Measurement> meas, double maxDist)
+        /// <summary>
+        /// Agglomerates any detections belonging to the same physical target.
+        /// A fast union–find clusters in Cartesian space, but the distance
+        /// threshold grows with range so that even at 100 km two echoes inside
+        /// the beam collapse to one.
+        /// </summary>
+        private List<Measurement> MergeCloseDetections(List<Measurement> meas, double baseDist)
         {
-            var merged = new List<Measurement>();
-            bool[] used = new bool[meas.Count];
-            var sorted = meas.OrderByDescending(m => m.Amplitude).ToList();
+            int n = meas.Count;
+            if (n <= 1) return meas;
 
-            for (int i = 0; i < sorted.Count; i++)
+            // ----- build union‑find -----
+            int[] parent = new int[n];
+            for (int i = 0; i < n; ++i) parent[i] = i;
+
+            int Find(int x) => parent[x] == x ? x : parent[x] = Find(parent[x]);
+            void Union(int a, int b)
             {
-                if (used[i]) continue;
-                var current = sorted[i];
-                merged.Add(current);
-                used[i] = true;
+                a = Find(a); b = Find(b);
+                if (a != b) parent[b] = a;
+            }
 
-                for (int j = i + 1; j < sorted.Count; j++)
+            // pair‑wise loop (n is usually tiny, so O(n²) is fine)
+            for (int i = 0; i < n - 1; ++i)
+            {
+                for (int j = i + 1; j < n; ++j)
                 {
-                    if (used[j]) continue;
-                    double dist = CartesianDistance(current, sorted[j]);
-                    if (dist < maxDist)
-                        used[j] = true;
+                    // dynamic threshold: take the larger range of the pair
+                    double rMax = Math.Max(meas[i].Range, meas[j].Range);
+
+                    // angular footprint of the main‑lobe at that range
+                    double angTol = 0.8 * BeamWidthRad * rMax;         // 80 % of beam footprint
+                    double rangeTol = baseDist;                         // given in ctor (e.g. 600 m)
+
+                    // choose the tighter of the two metrics
+                    double dCart = CartesianDistance(meas[i], meas[j]);
+                    if (dCart < Math.Max(rangeTol, angTol))
+                        Union(i, j);
                 }
             }
-            return merged;
+
+            // ----- pick one representative per cluster (highest amplitude) -----
+            Dictionary<int, Measurement> repr = new Dictionary<int, Measurement>();
+            for (int i = 0; i < n; ++i)
+            {
+                int root = Find(i);
+                if (!repr.ContainsKey(root) || meas[i].Amplitude > repr[root].Amplitude)
+                    repr[root] = meas[i];
+            }
+
+            return repr.Values.ToList();
         }
 
         private double CartesianDistance(Measurement a, Measurement b)

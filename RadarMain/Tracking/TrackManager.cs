@@ -42,6 +42,15 @@ namespace RealRadarSim.Tracking
         public double ExistenceIncreaseGain { get; set; } = 0.2;
         public double ExistenceDecayFactor { get; set; } = 0.995;
 
+        // ---------------------------------------------------------------------
+        //  Loose gate used to rescue lost tracks and stop “one‑scan” duplicates
+        // ---------------------------------------------------------------------
+        private const double RescueGateChi2 = 25.0;     // ≈ χ²(3 DOF, P≈0.9996)
+
+        /// Percentage of slant range that we are willing to fuse at long range.
+        /// 0.03 → 3 % of 60 km ≈ 1.8 km.
+        public double RangeMergeFraction { get; set; } = 0.03;
+
         // Measurement dimension (range, azimuth, elevation)
         private int measurementDimension = 3;
 
@@ -49,6 +58,35 @@ namespace RealRadarSim.Tracking
         {
             this.rng = rng;
         }
+
+        // ---------------------------------------------------------------------
+        //  Duplicate‑track suppression helpers
+        // ---------------------------------------------------------------------
+        private const double DuplicateGateThreshold = 16.27;          // χ²(3 dof, P=0.997)
+
+        /// <summary>
+        /// Returns true if <paramref name="initState"/> would be a duplicate of an
+        /// already‑confirmed track (tested in position‑only space).
+        /// </summary>
+        private bool IsDuplicateTrack(Vector<double> initState, Matrix<double> initCov)
+        {
+            Vector<double> pos = initState.SubVector(0, 3);
+
+            foreach (var trk in tracks)
+            {
+                Vector<double> d = pos - trk.Filter.State.SubVector(0, 3);
+
+                // innovation covariance for the 3‑D position
+                Matrix<double> S = initCov.SubMatrix(0, 3, 0, 3) +
+                                   trk.Filter.Covariance.SubMatrix(0, 3, 0, 3);
+                for (int k = 0; k < 3; ++k) S[k, k] += 1e-6;          // small stabiliser
+
+                double d2 = (d.ToRowMatrix() * S.Inverse() * d.ToColumnMatrix())[0, 0];
+                if (d2 < DuplicateGateThreshold) return true;         // inside 3‑σ gate?
+            }
+            return false;
+        }
+
 
         /// <summary>
         /// Main update loop to predict, associate, update, initiate, merge, and prune tracks.
@@ -271,7 +309,7 @@ namespace RealRadarSim.Tracking
             double epsMahalanobisSq = new ChiSquared(3)
                 .InverseCumulativeDistribution(GatingProbability);        // χ² threshold
             double maxEuclidSq = MaxTrackMergeDist * MaxTrackMergeDist;   // hard guard
-            int minPts = 1;                                       // cluster size
+            int minPts = 2;                                       // cluster size
 
             /* ----------  DBSCAN main loop  ---------- */
             int[] clusterIds = Enumerable.Repeat(-1, n).ToArray();
@@ -311,47 +349,58 @@ namespace RealRadarSim.Tracking
             var mergedTracks = new List<JPDA_Track>();
             foreach (var kv in clusters)
             {
-                var cl = kv.Value;
-                mergedTracks.Add(cl.Count == 1 ? cl[0] : FuseTrackCluster(cl));
-            }
+                if (kv.Key == 0)                     // clusterId 0 = noise → keep as‑is
+                {
+                    mergedTracks.AddRange(kv.Value);
+                    continue;
+                }
 
-            tracks = mergedTracks;   // replace with fused set
+                var cl = kv.Value;                   // ≥ 2 tracks guaranteed (minPts=2)
+                mergedTracks.Add(FuseTrackCluster(cl));
+            }
+            tracks = mergedTracks;
         }
 
         /* ------------------------------------------------------------------ */
         /* ---------------------  helper functions  ------------------------- */
         /* ------------------------------------------------------------------ */
 
-        /// <summary>
-        /// Return indices whose Mahalanobis distance to <paramref name="index"/>
-        /// is within the chi‑square threshold *and* inside MaxTrackMergeDist.
-        /// The self‑index is included (DBSCAN convention).
-        /// </summary>
+        /// Return neighbour indices whose Mahalanobis distance to “index”
+        /// is below χ²(3) and whose Euclidean spacing is not absurdly large.
+        /// The Euclidean guard adapts with range:  max( MaxTrackMergeDist ,
+        /// RangeMergeFraction × slant‑range ).
         private List<int> RegionQueryMahalanobis(
             Vector<double>[] pos,
             Matrix<double>[] posCov,
             int index,
             double epsMahalanobisSq,
-            double maxEuclidSq)
+            double maxEuclidSq /* retained but now used only at short range */)
         {
-            var neighbors = new List<int>();
-            for (int j = 0; j < pos.Length; j++)
+            var neighbours = new List<int>();
+
+            // dynamic Euclidean guard – 3 % of the slant range
+            double r = pos[index].L2Norm();
+            double dynGuardSq = (RangeMergeFraction * r) * (RangeMergeFraction * r);
+
+            double guardSq = Math.Max(maxEuclidSq, dynGuardSq);  // pick the larger
+
+            for (int j = 0; j < pos.Length; ++j)
             {
-                /* quick Euclidean reject test */
                 Vector<double> d = pos[j] - pos[index];
                 double euclidSq = d.DotProduct(d);
-                if (euclidSq > maxEuclidSq) continue;
+                if (euclidSq > guardSq) continue;                 // quick reject
 
-                /* Mahalanobis distance squared */
+                // Mahalanobis test (same as before)
                 Matrix<double> S = posCov[index] + posCov[j];
-                for (int k = 0; k < 3; k++) S[k, k] += 1e-6;   // tiny regularisation
+                for (int k = 0; k < 3; ++k) S[k, k] += 1e-6;
                 double d2 = (d.ToRowMatrix() * S.Inverse() * d.ToColumnMatrix())[0, 0];
 
                 if (d2 <= epsMahalanobisSq)
-                    neighbors.Add(j);
+                    neighbours.Add(j);
             }
-            return neighbors;
+            return neighbours;
         }
+
 
         /// <summary>
         /// Recursive region growth for DBSCAN (Mahalanobis metric).
@@ -540,6 +589,33 @@ namespace RealRadarSim.Tracking
 
         #region Candidate Track Management
 
+        /// <summary>
+        /// True if measurement <paramref name="m"/> still fits track <paramref name="trk"/>
+        /// under a loose 3‑D Mahalanobis gate.  Uses only position (no Doppler).
+        /// </summary>
+        /// True if the raw measurement m is still compatible with track trk
+        /// under a *speed‑adaptive* 3‑D Mahalanobis gate (position only).
+        private bool FitsLoosePositionGate(Measurement m, JPDA_Track trk)
+        {
+            // 1) measurement → Cartesian
+            Vector<double> zCart = MeasurementToCartesian(m);
+            Vector<double> xCart = trk.Filter.State.SubVector(0, 3);
+            Vector<double> diff = zCart - xCart;
+
+            // 2) innovation covariance (position block only)
+            Matrix<double> Ppos = trk.Filter.Covariance.SubMatrix(0, 3, 0, 3).Clone();
+            for (int k = 0; k < 3; ++k) Ppos[k, k] += 1e-6;           // regulariser
+
+            // 3) Mahalanobis distance
+            double d2 = (diff.ToRowMatrix() * Ppos.Inverse() * diff.ToColumnMatrix())[0, 0];
+
+            // 4) dynamic gate: χ²(3 dof, 0.9996) ≈ 25 × (1 + |v|/250)
+            double speed = trk.Filter.State.SubVector(3, 3).L2Norm();   // m/s
+            double gateChi = 25.0 * (1.0 + speed / 250.0);
+
+            return d2 < gateChi;
+        }
+
         private void CreateOrUpdateCandidates(List<Measurement> measurements, double[] beta0)
         {
             // Mark measurements that are well-associated with existing tracks.
@@ -560,12 +636,38 @@ namespace RealRadarSim.Tracking
 
         private void CreateOrUpdateCandidate(Measurement m)
         {
+            /* -------------------------------------------------------------
+             * 1)  FIRST: can this measurement still belong to an EXISTING
+             *     track under a *loose* 3‑σ position gate?  If yes we feed
+             *     it into that track and STOP — no candidate needed.
+             * ----------------------------------------------------------- */
             foreach (var trk in tracks)
             {
-                if (MeasurementTrackDistance(m, trk) < CandidateMergeDistance)
-                    return;
+                if (FitsLoosePositionGate(m, trk))
+                {
+                    // Convert into the 3‑D spherical vector expected by the EKF
+                    Vector<double> z = ToVector(m);
+
+                    // Plain EKF update (uses the filter’s own R)
+                    trk.Filter.Update(z);
+
+                    // House‑keeping
+                    trk.Age = 0;
+                    trk.ExistenceProb = Math.Min(1.0, trk.ExistenceProb + ExistenceIncreaseGain);
+                    return;                         // measurement consumed – we're done
+                }
             }
 
+            /* -------------------------------------------------------------
+             * 2) Otherwise proceed with the classic candidate logic
+             * ----------------------------------------------------------- */
+
+            // Bail out if still too close to an existing track *geometrically*
+            foreach (var trk in tracks)
+                if (MeasurementTrackDistance(m, trk) < CandidateMergeDistance)
+                    return;
+
+            // Merge with an existing candidate if close enough, else open a new one
             double bestDist = double.MaxValue;
             CandidateTrack bestCandidate = null;
             foreach (var cand in candidates)
@@ -623,23 +725,44 @@ namespace RealRadarSim.Tracking
         }
 
 
+        /// <summary>
+        /// Confirm candidate tracks once they have enough hits.
+        /// </summary>
         private void ConfirmCandidates()
         {
+            // 1) Gather candidates ready for confirmation
             List<CandidateTrack> toConfirm = new List<CandidateTrack>();
             foreach (var cand in candidates)
             {
                 if (cand.Measurements.Count >= InitRequiredHits)
                     toConfirm.Add(cand);
             }
+
+            // 2) For each, compute its initial state & covariance,
+            //    reject duplicates, then promote to a real track.
             foreach (var cand in toConfirm)
             {
+                // a) Compute average measurement
                 Vector<double> zSum = DenseVector.Create(3, 0.0);
                 foreach (var meas in cand.Measurements)
                     zSum += ToVector(meas);
                 Vector<double> zAvg = zSum / cand.Measurements.Count;
+
+                // b) Build initial state & cov
                 (Vector<double> initState, Matrix<double> initCov) = MeasurementToInitialState(zAvg);
 
-                // Create a new track using the 9-dimensional EKF.
+                // -------------------------------------------------------------
+                //  <<< NEW ­– duplicate‑track suppression >>>
+                // -------------------------------------------------------------
+                if (IsDuplicateTrack(initState, initCov))
+                {
+                    // A valid track already covers this region – discard candidate.
+                    candidates.Remove(cand);
+                    continue;
+                }
+                // -------------------------------------------------------------
+
+                // c) Create EKF & new JPDA_Track
                 ITrackerFilter ekf = new ManeuveringEKF(initState, initCov, AccelNoise);
 
                 JPDA_Track newTrack = new JPDA_Track
@@ -650,6 +773,8 @@ namespace RealRadarSim.Tracking
                     ExistenceProb = 0.5
                 };
                 tracks.Add(newTrack);
+
+                // d) Remove from candidates list
                 candidates.Remove(cand);
             }
         }

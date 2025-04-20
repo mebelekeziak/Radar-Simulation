@@ -43,7 +43,7 @@ namespace RealRadarSim.Tracking
             double velocityNoiseStd = 1.0,
             double gateProbabilityAlpha = 0.05,
             double rangeNoiseStd = 40.0,
-            double angleNoiseStdRad = 0.1)
+            double angleNoiseStdRad = 0.2)
         {
             if (x0.Count != StateDim) throw new ArgumentException($"x0 must be {StateDim}-vector");
             if (P0.RowCount != StateDim || P0.ColumnCount != StateDim) throw new ArgumentException($"P0 must be {StateDim}×{StateDim}");
