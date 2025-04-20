@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using MathNet.Numerics.Distributions;
@@ -636,115 +636,139 @@ namespace RealRadarSim.Models
             };
         }
 
+        /// <summary>
+        /// Range‑domain CA‑CFAR with a sliding window O(n) implementation.
+        /// Assumes <paramref name="measurements"/> is unsorted.
+        /// </summary>
         private List<Measurement> CFARFilterMeasurements(List<Measurement> measurements)
         {
-            var sorted = measurements.OrderBy(m => m.Range).ToList();
-            var results = new List<Measurement>();
-            bool[] passed = new bool[sorted.Count];
-
-            for (int i = 0; i < sorted.Count; i++)
+            if (measurements.Count == 0) return measurements;
+        
+            // 1) Sort by range once.
+            var sorted = measurements
+                .OrderBy(m => m.Range)
+                .ToArray();
+        
+            int n = sorted.Length;
+            bool[] pass = new bool[n];
+            var results = new List<Measurement>(n);
+        
+            // 2) Sliding window indices.
+            int left = 0, right = 0;
+        
+            // Pre‑compute linearised amplitudes to avoid repeat Pow().
+            double[] amp = new double[n];
+            for (int i = 0; i < n; ++i) amp[i] = sorted[i].Amplitude;
+        
+            for (int i = 0; i < n; ++i)
             {
-                Measurement cut = sorted[i];
-                double cutRange = cut.Range;
-
-                var training = new List<double>();
-                foreach (var neighbor in sorted)
+                double rCut = sorted[i].Range;
+        
+                // Expand right edge of the window.
+                while (right < n && sorted[right].Range - rCut <= CFARWindowWidth)
+                    right++;
+        
+                // Shrink left edge (guard band).
+                while (left < i && rCut - sorted[left].Range > CFARWindowWidth)
+                    left++;
+        
+                // Collect training cells excluding guard band.
+                var noise = new List<double>();
+                for (int k = left; k < right; ++k)
                 {
-                    if (ReferenceEquals(neighbor, cut)) continue;
-                    double dr = Math.Abs(neighbor.Range - cutRange);
-                    if (dr <= CFARWindowWidth && dr > CFARGuardWidth)
-                        training.Add(neighbor.Amplitude);
+                    if (k == i) continue;                          // skip CUT
+                    if (Math.Abs(sorted[k].Range - rCut) <= CFARGuardWidth) continue; // skip guard
+                    noise.Add(amp[k]);
                 }
-
-                DebugLogger.LogCFAR(
-                    $"CFAR - Index {i}: R={cutRange:F2}, Amp={cut.Amplitude:F2}, TrainingCount={training.Count}"
-                );
-
-                if (training.Count == 0)
+        
+                double threshold;
+                if (noise.Count == 0)
                 {
-                    // Fallback threshold
-                    double fallbackThreshold = Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.5;
-                    passed[i] = (cut.Amplitude > fallbackThreshold);
-                    DebugLogger.LogCFAR(
-                        $"CFAR - Index {i}: No training data, fallback threshold={fallbackThreshold:F2}, " +
-                        $"Decision={(passed[i] ? "Pass" : "Reject")}."
-                    );
-                    continue;
+                    // Fallback: 1.5 × required SNR (linear)
+                    threshold = 1.5 * Math.Pow(10.0, requiredSNR_dB / 10.0);
                 }
-
-                training.Sort();
-                int K = (int)(0.75 * training.Count);
-                if (K >= training.Count) K = training.Count - 1;
-                if (K < 0) K = 0;
-                double noiseEstimate = training[K];
-
-                double threshold = CFARThresholdMultiplier * noiseEstimate;
-                passed[i] = (cut.Amplitude >= threshold);
-
-                DebugLogger.LogCFAR(
-                    $"CFAR - Index {i}: NoiseEst={noiseEstimate:F2}, Threshold={threshold:F2}, " +
-                    $"Decision={(passed[i] ? "Pass" : "Reject")}."
-                );
+                else
+                {
+                    // 75‑percentile of training set – robust to outliers
+                    noise.Sort();
+                    double noiseEstimate = noise[(int)(0.75 * (noise.Count - 1))];
+                    threshold = CFARThresholdMultiplier * noiseEstimate;
+                }
+        
+                pass[i] = amp[i] >= threshold;
+                if (pass[i]) results.Add(sorted[i]);
             }
-
-            for (int i = 0; i < sorted.Count; i++)
-            {
-                if (passed[i])
-                    results.Add(sorted[i]);
-            }
-
+        
             return results;
         }
-
-        // Not used anywhere in code
-        private List<Measurement> DopplerCFARFilterMeasurements(List<Measurement> measurements) 
+        
+        
+        private List<Measurement> DopplerCFARFilterMeasurements(List<Measurement> measurements)
         {
-            // If no velocity data, just return
-            if (!measurements.Any(m => UseDopplerProcessing))
+            if (measurements.Count == 0)
                 return measurements;
-
-            var sorted = measurements.OrderBy(m => m.RadialVelocity).ToList();
-            var results = new List<Measurement>();
-            bool[] passed = new bool[sorted.Count];
-
-            for (int i = 0; i < sorted.Count; i++)
+        
+            // 1) Sort by radial velocity once.
+            var sorted = measurements
+                .OrderBy(m => m.RadialVelocity)
+                .ToArray();
+        
+            int n = sorted.Length;
+            var results = new List<Measurement>(n);
+        
+            // Sliding‐window bounds.
+            int left = 0, right = 0;
+        
+            // Pre‑compute amplitudes to avoid repeated Pow() calls.
+            double[] amp = new double[n];
+            for (int i = 0; i < n; ++i)
+                amp[i] = sorted[i].Amplitude;
+        
+            for (int i = 0; i < n; ++i)
             {
-                Measurement cut = sorted[i];
-                double cutVel = cut.RadialVelocity;
-
-                var training = new List<double>();
-                foreach (var neighbor in sorted)
+                // Current CUT velocity
+                double vCut = sorted[i].RadialVelocity;
+        
+                // Expand right edge while within the velocity window
+                while (right < n && sorted[right].RadialVelocity - vCut <= DopplerCFARWindowWidth)
+                    right++;
+        
+                // Shrink left edge past the window
+                while (left < i && vCut - sorted[left].RadialVelocity > DopplerCFARWindowWidth)
+                    left++;
+        
+                // Gather training cells (exclude guard band and CUT)
+                var noise = new List<double>(capacity: right - left);
+                for (int k = left; k < right; ++k)
                 {
-                    if (ReferenceEquals(neighbor, cut)) continue;
-                    double dv = Math.Abs(neighbor.RadialVelocity - cutVel);
-                    if (dv <= DopplerCFARWindow && dv > DopplerCFARGuard)
-                        training.Add(neighbor.Amplitude);
+                    if (k == i) 
+                        continue;                                  // skip CUT
+                    if (Math.Abs(sorted[k].RadialVelocity - vCut) <= DopplerCFARGuardWidth) 
+                        continue;                                  // skip guard cells
+                    noise.Add(amp[k]);
                 }
-
-                if (training.Count == 0)
+        
+                // Compute threshold
+                double threshold;
+                if (noise.Count == 0)
                 {
-                    // Fallback threshold
-                    // We could use the same as above or a different reference
-                    double fallbackThreshold = Math.Pow(10.0, requiredSNR_dB / 10.0) * 1.0;
-                    passed[i] = (cut.Amplitude > fallbackThreshold);
-                    continue;
+                    // No training cells → fallback to a fixed SNR in linear scale
+                    threshold = 1.5 * Math.Pow(10.0, requiredSNR_dB / 10.0);
                 }
-
-                training.Sort();
-                int K = (int)(0.75 * training.Count);
-                if (K >= training.Count) K = training.Count - 1;
-                if (K < 0) K = 0;
-                double noiseEstimate = training[K];
-                double threshold = DopplerCFARThresholdMultiplier * noiseEstimate;
-                passed[i] = (cut.Amplitude >= threshold);
-            }
-
-            for (int i = 0; i < sorted.Count; i++)
-            {
-                if (passed[i])
+                else
+                {
+                    // 75th‐percentile noise estimate → robust thresholding
+                    noise.Sort();
+                    int idx = (int)(0.75 * (noise.Count - 1));
+                    double noiseEstimate = noise[idx];
+                    threshold = DopplerCFARThresholdMultiplier * noiseEstimate;
+                }
+        
+                // If CUT exceeds threshold, keep it
+                if (amp[i] >= threshold)
                     results.Add(sorted[i]);
             }
-
+        
             return results;
         }
 
@@ -793,11 +817,8 @@ namespace RealRadarSim.Models
 
         private double NormalizeAngle(double angle)
         {
-            while (angle > Math.PI)
-                angle -= 2.0 * Math.PI;
-            while (angle < -Math.PI)
-                angle += 2.0 * Math.PI;
-            return angle;
+            // Wrap any radian angle into (–π, π] in O(1) time
+            return Math.IEEERemainder(angle, 2.0 * Math.PI);
         }
     }
 }
