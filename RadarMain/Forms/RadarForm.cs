@@ -388,9 +388,10 @@ namespace RealRadarSim.Forms
                     {
                         double z = trk.Filter.State[2];
                         double r = Math.Sqrt(x * x + y * y + z * z);
-                        double snr_dB = radar.SNR0_dB
-                                        + 10.0 * Math.Log10(target.RCS / radar.ReferenceRCS)
-                                        + radar.PathLossExponent_dB * Math.Log10(radar.ReferenceRange / r);
+
+                        // Exact SNR coming from the radar model
+                        double snr_dB = radar.GetSNR_dB(target.RCS, r);
+
                         snrInfo = $", SNR={snr_dB:F1} dB";
                     }
                 }
