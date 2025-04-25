@@ -8,7 +8,7 @@ using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
 namespace RealRadarSim.Models
 {
-    public class AdvancedRadar
+    public partial class AdvancedRadar
     {
         public double MaxRange { get; private set; }
         public double BeamWidthRad { get; private set; }
@@ -137,6 +137,19 @@ namespace RealRadarSim.Models
         /// Weather attenuation in dB (one-way).
         /// </summary>
         public double WeatherLossOneWay_dB { get; set; } = 0.5;
+
+        /// <summary>
+        /// Public helper that lets external test code run the built-in range-domain CA-CFAR
+        /// on an arbitrary list of measurements without having to duplicate the algorithm.
+        /// </summary>
+        public List<Measurement> RunRangeCFAR(List<Measurement> measurements)
+            => CFARFilterMeasurements(measurements);
+
+        /// <summary>
+        /// Public helper for the Doppler-domain CA-CFAR.
+        /// </summary>
+        public List<Measurement> RunDopplerCFAR(List<Measurement> measurements)
+            => DopplerCFARFilterMeasurements(measurements);
 
         // Nested class representing a single AESA beam.
         public class AesaBeam
