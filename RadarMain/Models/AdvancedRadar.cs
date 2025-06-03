@@ -73,6 +73,7 @@ namespace RealRadarSim.Models
         // New AESA mode properties.
         public int ConcurrentAesaBeams { get; set; } = 12;
         public List<AesaBeam> AesaBeams { get; private set; }
+        private AesaScheduler scheduler;
         public AesaBeam LockBeam { get; private set; } = null;
         private double aesaElevationOscFreq = 0.1; // Hz
 
@@ -322,8 +323,9 @@ namespace RealRadarSim.Models
                 }
 
                 LockBeam = new AesaBeam(0, 0, 0, 0);
+                scheduler = new AesaScheduler(this);
             }
-        } 
+        }
 
         private void InitializeAircraftMode()
         {
@@ -377,25 +379,13 @@ namespace RealRadarSim.Models
                 return;
             }
 
-            JPDA_Track best = null;
-            double bestProb = 0.0;
-            foreach (var trk in tracks)
-            {
-                if (trk.ExistenceProb > bestProb)
-                {
-                    best = trk;
-                    bestProb = trk.ExistenceProb;
-                }
-            }
-
-            if (best != null && bestProb > 0.6)
-            {
+            var best = tracks.OrderByDescending(t => t.ExistenceProb).FirstOrDefault();
+            if (best != null && best.ExistenceProb > 0.6)
                 LockBeam.AssignTrack(best);
-            }
             else
-            {
                 LockBeam.ClearAssignment();
-            }
+
+            scheduler?.AssignBeams(tracks);
         }
 
         public void UpdateBeam(double dt)
