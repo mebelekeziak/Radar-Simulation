@@ -275,6 +275,27 @@ namespace RealRadarSim.Forms
                                 startAngle, sweepAngle);
                         }
                     }
+                    if (advRadar.LockBeam != null && advRadar.LockBeam.IsTracking)
+                    {
+                        double az = advRadar.LockBeam.CurrentAzimuth;
+                        double bw = radar.BeamWidthRad;
+                        float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
+                        float sweepAngle = (float)(bw * 180.0 / Math.PI);
+                        using (Brush lockBrush = new SolidBrush(Color.FromArgb(120, Color.Red)))
+                        {
+                            g.FillPie(lockBrush,
+                                -radarDisplayRadius, -radarDisplayRadius,
+                                radarDisplayRadius * 2, radarDisplayRadius * 2,
+                                startAngle, sweepAngle);
+                        }
+                        using (Pen lockPen = new Pen(Color.Red, 2))
+                        {
+                            g.DrawPie(lockPen,
+                                -radarDisplayRadius, -radarDisplayRadius,
+                                radarDisplayRadius * 2, radarDisplayRadius * 2,
+                                startAngle, sweepAngle);
+                        }
+                    }
                     // Draw max azimuth text (fixed at 70°).
                     g.ResetTransform();
                     g.DrawString("Radar Max Azimuth: 70°", trackFont, textBrush, 20, 20);
