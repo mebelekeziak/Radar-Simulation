@@ -1,0 +1,87 @@
+{
+  "radar": {
+    "maxRange": 120000,
+    "beamWidthDeg": 12.0,
+    "rotationSpeedDegSec": 36,
+    "falseAlarmDensity": 1e-9,
+
+    "useDopplerProcessing": true,
+    "velocityNoiseStd": 1.5,
+    "useDopplerCFAR": true,
+    "dopplerCFARWindow": 20.0,
+    "dopplerCFARGuard": 2.5,
+    "dopplerCFARThresholdMultiplier": 0.005,
+
+    "frequencyHz": 3000000000,
+    "txPower_dBm": 70,
+    "antennaGain_dBi": 107,
+
+    "snr0_dB": 30.0,
+    "referenceRange": 20000.0,
+    "requiredSNR_dB": -20.0,
+
+    "lockRange": 70000,
+    "lockSNRThreshold_dB": 3.0,
+
+    "rangeNoiseBase": 80.0,
+    "angleNoiseBase": 0.0005,
+
+    "cfarWindowWidth": 200.0,
+    "cfarGuardWidth": 1.0,
+    "cfarThresholdMultiplier": 0.0005,
+    "clusterDistanceMeters": 50.0,
+
+    "radarType": "ground",
+    "showAzimuthBars": true,
+    "showElevationBars": true,
+    "antennaAzimuthScan": 140,
+    "antennaElevationBars": 4,
+    "barSpacingDeg": 1.0,
+    "tiltOffsetDeg": 10,
+    "pathLossExponent_dB": 40.0,
+
+    "beamSpeedMultiplier": 5.0,
+    "aesaElevationOscFreq": 0.1
+  },
+  "targets": [
+    {
+      "x": 20000,
+      "y": 15000,
+      "z": 2000,
+      "speed": 180,
+      "headingDeg": 45,
+      "climbRate": 5,
+      "turnRateDeg": 0.5,
+      "processStd": 0.5,
+      "aircraftName": "Boeing 737",
+      "rcs": 15.0
+    },
+    {
+      "x": -25000,
+      "y": -20000,
+      "z": 1000,
+      "speed": 220,
+      "headingDeg": -60,
+      "climbRate": 0,
+      "turnRateDeg": 3,
+      "processStd": 0.5,
+      "aircraftName": "Airbus A320",
+      "rcs": 15.0
+    }
+  ],
+  "trackManager": {
+    "initGateThreshold": 12.07,
+    "initRequiredHits": 3,
+    "initScanWindow": 6,
+    "initPosStd": 20.0,
+    "initVelStd": 5.0,
+    "gatingThreshold": 12.07,
+    "accelNoise": 2.0,
+    "probDetection": 0.99,
+    "probSurvival": 0.995,
+    "pruneThreshold": 0.001,
+    "maxTrackMergeDist": 1500.0,
+    "maxTrackAge": 20,
+    "candidateMergeDistance": 500.0
+  }
+}

@@ -76,6 +76,19 @@ namespace RealRadarSim.Models
         public AesaBeam LockBeam { get; private set; } = null;
         private double aesaElevationOscFreq = 0.1; // Hz
 
+        /// <summary>
+        /// Frequency of the AESA search beam elevation oscillation (Hz).
+        /// </summary>
+        public double AesaElevationOscFreq
+        {
+            get => aesaElevationOscFreq;
+            set => aesaElevationOscFreq = Math.Max(0.01, value);
+        }
+
+        /// <summary>
+        /// Multiplier controlling how quickly AESA beams slew compared to
+        /// mechanical mode.
+        /// </summary>
         public double BeamSpeedMultiplier { get; set; } = 5.0;
 
         // LOCK-RELATED FIELDS
