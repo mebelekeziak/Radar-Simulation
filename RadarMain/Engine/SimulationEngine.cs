@@ -363,10 +363,12 @@ namespace RealRadarSim.Engine
                             bestTgt = t;
                         }
                     }
-                    if (bestTgt != null && bestDist < 5000)
-                        trk.FlightName = bestTgt.AircraftName;
-                }
+                if (bestTgt != null && bestDist < 5000)
+                    trk.FlightName = bestTgt.AircraftName;
             }
+
+            Radar.UpdateTrackAssignments(tracks);
+        }
         }
 
         public double GetDt() => dt;
