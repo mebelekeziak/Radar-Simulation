@@ -277,12 +277,17 @@ namespace RealRadarSim.Tracking
                     Matrix<double> S_jpda = Pzz + R_meas;
                     tracks[i].Filter.Update(zEff, S_jpda);
                     tracks[i].Age = 0;
+                    tracks[i].TimeSinceLastDetection = 0.0;
                     tracks[i].ExistenceProb = Math.Min(1.0, tracks[i].ExistenceProb + ExistenceIncreaseGain * sumBeta);
+                    tracks[i].SuspectedSpoofed = false;
                 }
                 else
                 {
                     // No valid measurement associated—decay the existence probability.
                     tracks[i].ExistenceProb *= ExistenceDecayFactor;
+                    tracks[i].TimeSinceLastDetection += dt;
+                    if (tracks[i].TimeSinceLastDetection > 5.0)
+                        tracks[i].SuspectedSpoofed = true;
                 }
             }
 
@@ -775,7 +780,9 @@ namespace RealRadarSim.Tracking
                     TrackId = nextTrackId++,
                     Filter = ekf,
                     Age = 0,
-                    ExistenceProb = 0.5
+                    ExistenceProb = 0.5,
+                    TimeSinceLastDetection = 0.0,
+                    SuspectedSpoofed = false
                 };
                 tracks.Add(newTrack);
 
@@ -816,5 +823,17 @@ namespace RealRadarSim.Tracking
         public double Age;
         public double ExistenceProb;
         public string FlightName; // Optional flight or target name.
+
+        /// <summary>
+        /// Time elapsed since the track was last updated by a detection.
+        /// </summary>
+        public double TimeSinceLastDetection { get; set; }
+
+        /// <summary>
+        /// True if the track exhibits behaviour indicative of spoofing.
+        /// </summary>
+        public bool SuspectedSpoofed { get; set; }
+
+        public double ConfidenceScore => ExistenceProb;
     }
 }

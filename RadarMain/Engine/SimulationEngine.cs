@@ -6,6 +6,7 @@ using MoonSharp.Interpreter.Loaders;
 using RealRadarSim.Models;
 using RealRadarSim.Tracking;
 using RealRadarSim.Logging;
+using RealRadarSim.Processing;
 
 namespace RealRadarSim.Engine
 {
@@ -17,6 +18,7 @@ namespace RealRadarSim.Engine
         private List<TargetCT> Targets = new List<TargetCT>();
         private AdvancedRadar Radar;
         private TrackManager trackManager;
+        private PulseDopplerProcessor pdProcessor;
         private Random rng;
         private List<Measurement> lastMeasurements = new List<Measurement>();
 
@@ -46,6 +48,7 @@ namespace RealRadarSim.Engine
                 MaxTrackAge = 40.0,
                 CandidateMergeDistance = 1500.0
             };
+            pdProcessor = new PulseDopplerProcessor();
 
             if (File.Exists("config.json"))
             {
@@ -498,6 +501,7 @@ namespace RealRadarSim.Engine
 
             // Generate measurements.
             var measurements = Radar.GetMeasurements(Targets);
+            measurements = pdProcessor.ProcessMeasurements(measurements);
             lastMeasurements = measurements;
 
             // --- Debug logging: Log only if at least one target measurement is generated.
