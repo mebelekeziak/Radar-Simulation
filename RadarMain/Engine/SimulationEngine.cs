@@ -47,7 +47,21 @@ namespace RealRadarSim.Engine
                 CandidateMergeDistance = 1500.0
             };
 
-            if (File.Exists("config.lua"))
+            if (File.Exists("config.json"))
+            {
+                try
+                {
+                    string json = File.ReadAllText("config.json");
+                    var doc = System.Text.Json.JsonDocument.Parse(json);
+                    ConfigureFromJson(doc.RootElement);
+                }
+                catch (Exception ex)
+                {
+                    System.IO.File.WriteAllText("json_error.txt", $"Error loading config.json: {ex.Message}");
+                    InitializeDefaultConfiguration();
+                }
+            }
+            else if (File.Exists("config.lua"))
             {
                 try
                 {
@@ -61,7 +75,6 @@ namespace RealRadarSim.Engine
                     if (configDyn.Type == DataType.Table)
                     {
                         var config = configDyn.Table;
-                        // Call a modified configuration routine that also outputs debug info
                         ConfigureFromLua(config);
                     }
                     else
@@ -261,6 +274,141 @@ namespace RealRadarSim.Engine
             }
         }
 
+        // New JSON configuration loader
+        private void ConfigureFromJson(System.Text.Json.JsonElement config)
+        {
+            if (config.TryGetProperty("radar", out var radarEl) && radarEl.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                double maxRange = GetNumberOrDefault(radarEl, "maxRange", 100000);
+                double beamWidthDeg = GetNumberOrDefault(radarEl, "beamWidthDeg", 10.0);
+                double rotationSpeedDegSec = GetNumberOrDefault(radarEl, "rotationSpeedDegSec", 36);
+                double falseAlarmDensity = GetNumberOrDefault(radarEl, "falseAlarmDensity", 1e-10);
+
+                double snr0_dB = GetNumberOrDefault(radarEl, "snr0_dB", 30.0);
+                double referenceRange = GetNumberOrDefault(radarEl, "referenceRange", 10000.0);
+                double requiredSNR_dB = GetNumberOrDefault(radarEl, "requiredSNR_dB", 0.0);
+                double rangeNoiseBase = GetNumberOrDefault(radarEl, "rangeNoiseBase", 100.0);
+                double angleNoiseBase = GetNumberOrDefault(radarEl, "angleNoiseBase", 0.001);
+                double cfarWindowWidth = GetNumberOrDefault(radarEl, "cfarWindowWidth", 5000.0);
+                double cfarGuardWidth = GetNumberOrDefault(radarEl, "cfarGuardWidth", 300.0);
+                double cfarThresholdMultiplier = GetNumberOrDefault(radarEl, "cfarThresholdMultiplier", 8.0);
+                double clusterDistanceMeters = GetNumberOrDefault(radarEl, "clusterDistanceMeters", 600.0);
+                string radarType = radarEl.TryGetProperty("radarType", out var rt) && rt.ValueKind == System.Text.Json.JsonValueKind.String ? rt.GetString() : "ground";
+
+                int antennaElevationBars = GetIntOrDefault(radarEl, "antennaElevationBars", 4);
+                double antennaAzimuthScan = GetNumberOrDefault(radarEl, "antennaAzimuthScan", 140.0);
+                double tiltOffsetDeg = GetNumberOrDefault(radarEl, "tiltOffsetDeg", 0.0);
+
+                double lockRange = GetNumberOrDefault(radarEl, "lockRange", 50000.0);
+                double lockSNRThreshold_dB = GetNumberOrDefault(radarEl, "lockSNRThreshold_dB", 5.0);
+
+                double pathLossExponent_dB = GetNumberOrDefault(radarEl, "pathLossExponent_dB", 40.0);
+
+                bool useDopplerProcessing = GetBoolOrDefault(radarEl, "useDopplerProcessing", false);
+                double velocityNoiseStd = GetNumberOrDefault(radarEl, "velocityNoiseStd", 1.0);
+                bool useDopplerCFAR = GetBoolOrDefault(radarEl, "useDopplerCFAR", false);
+                double dopplerCFARWindow = GetNumberOrDefault(radarEl, "dopplerCFARWindow", 150.0);
+                double dopplerCFARGuard = GetNumberOrDefault(radarEl, "dopplerCFARGuard", 20.0);
+                double dopplerCFARThresholdMultiplier = GetNumberOrDefault(radarEl, "dopplerCFARThresholdMultiplier", 6.0);
+                double FrequencyHz = GetNumberOrDefault(radarEl, "frequencyHz", 3e9);
+                double TxPower_dBm = GetNumberOrDefault(radarEl, "txPower_dBm", 70.0);
+                double AntennaGain_dBi = GetNumberOrDefault(radarEl, "antennaGain_dBi", 101.0);
+
+                Radar = new AdvancedRadar(
+                    maxRange,
+                    beamWidthDeg,
+                    rotationSpeedDegSec,
+                    falseAlarmDensity,
+                    snr0_dB,
+                    referenceRange,
+                    requiredSNR_dB,
+                    rangeNoiseBase,
+                    angleNoiseBase,
+                    rng,
+                    cfarWindowWidth,
+                    cfarGuardWidth,
+                    cfarThresholdMultiplier,
+                    clusterDistanceMeters,
+                    radarType.ToLower(),
+                    antennaElevationBars,
+                    antennaAzimuthScan,
+                    tiltOffsetDeg,
+                    lockRange,
+                    lockSNRThreshold_dB,
+                    pathLossExponent_dB,
+                    FrequencyHz,
+                    TxPower_dBm,
+                    AntennaGain_dBi
+                );
+
+                Radar.UseDopplerProcessing = useDopplerProcessing;
+                Radar.VelocityNoiseStd = velocityNoiseStd;
+                Radar.UseDopplerCFAR = useDopplerCFAR;
+                Radar.DopplerCFARWindow = dopplerCFARWindow;
+                Radar.DopplerCFARGuard = dopplerCFARGuard;
+                Radar.DopplerCFARThresholdMultiplier = dopplerCFARThresholdMultiplier;
+
+                Radar.ShowAzimuthBars = GetBoolOrDefault(radarEl, "showAzimuthBars", false);
+                Radar.ShowElevationBars = GetBoolOrDefault(radarEl, "showElevationBars", false);
+
+                Radar.BeamSpeedMultiplier = GetNumberOrDefault(radarEl, "beamSpeedMultiplier", 5.0);
+                Radar.AesaElevationOscFreq = GetNumberOrDefault(radarEl, "aesaElevationOscFreq", 0.1);
+
+                if (radarEl.TryGetProperty("operationMode", out var opModeEl) && opModeEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                    Radar.UseAesaMode = opModeEl.GetString()?.ToLower() == "aesa";
+            }
+            else
+            {
+                InitializeDefaultConfiguration();
+            }
+
+            if (config.TryGetProperty("targets", out var targetsEl) && targetsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var newTargets = new List<TargetCT>();
+                foreach (var t in targetsEl.EnumerateArray())
+                {
+                    double x = GetNumberOrDefault(t, "x", 0);
+                    double y = GetNumberOrDefault(t, "y", 0);
+                    double z = GetNumberOrDefault(t, "z", 0);
+                    double speed = GetNumberOrDefault(t, "speed", 0);
+                    double headingDeg = GetNumberOrDefault(t, "headingDeg", 0);
+                    double climbRate = GetNumberOrDefault(t, "climbRate", 0);
+                    double turnRateDeg = GetNumberOrDefault(t, "turnRateDeg", 0);
+                    double pStd = GetNumberOrDefault(t, "processStd", 0.5);
+                    string acName = t.TryGetProperty("aircraftName", out var acn) && acn.ValueKind == System.Text.Json.JsonValueKind.String ? acn.GetString() : "Unknown";
+                    double rcs = GetNumberOrDefault(t, "rcs", 10);
+
+                    newTargets.Add(new TargetCT(x, y, z, speed, headingDeg, climbRate, turnRateDeg, pStd, acName, rcs, rng));
+                }
+
+                if (newTargets.Count > 0)
+                    Targets = newTargets;
+                else
+                    SetDefaultTargets();
+            }
+            else
+            {
+                SetDefaultTargets();
+            }
+
+            if (config.TryGetProperty("trackManager", out var tmEl) && tmEl.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                trackManager.InitGateThreshold = GetNumberOrDefault(tmEl, "initGateThreshold", 14.07);
+                trackManager.InitRequiredHits = GetIntOrDefault(tmEl, "initRequiredHits", 3);
+                trackManager.InitScanWindow = GetIntOrDefault(tmEl, "initScanWindow", 3);
+                trackManager.InitPosStd = GetNumberOrDefault(tmEl, "initPosStd", 200.0);
+                trackManager.InitVelStd = GetNumberOrDefault(tmEl, "initVelStd", 100.0);
+                trackManager.GatingProbability = GetNumberOrDefault(tmEl, "gatingProbability", 0.99);
+                trackManager.AccelNoise = GetNumberOrDefault(tmEl, "accelNoise", 2.0);
+                trackManager.ProbDetection = GetNumberOrDefault(tmEl, "probDetection", 0.9);
+                trackManager.ProbSurvival = GetNumberOrDefault(tmEl, "probSurvival", 0.995);
+                trackManager.PruneThreshold = GetNumberOrDefault(tmEl, "pruneThreshold", 0.01);
+                trackManager.MaxTrackMergeDist = GetNumberOrDefault(tmEl, "maxTrackMergeDist", 800.0);
+                trackManager.MaxTrackAge = GetNumberOrDefault(tmEl, "maxTrackAge", 40.0);
+                trackManager.CandidateMergeDistance = GetNumberOrDefault(tmEl, "candidateMergeDistance", 1500.0);
+            }
+        }
+
         private void InitializeDefaultConfiguration()
         {
             Radar = new AdvancedRadar(
@@ -307,6 +455,33 @@ namespace RealRadarSim.Engine
                 return dynVal.Boolean;
             else if (dynVal.Type == DataType.Number)
                 return Math.Abs(dynVal.Number) > double.Epsilon;
+            return defVal;
+        }
+
+        // Helpers for JSON configuration ---------------------------
+        private double GetNumberOrDefault(System.Text.Json.JsonElement el, string key, double defVal)
+        {
+            if (el.TryGetProperty(key, out var prop) && prop.TryGetDouble(out double v))
+                return v;
+            return defVal;
+        }
+
+        private bool GetBoolOrDefault(System.Text.Json.JsonElement el, string key, bool defVal)
+        {
+            if (el.TryGetProperty(key, out var prop))
+            {
+                if (prop.ValueKind == System.Text.Json.JsonValueKind.True || prop.ValueKind == System.Text.Json.JsonValueKind.False)
+                    return prop.GetBoolean();
+                if (prop.ValueKind == System.Text.Json.JsonValueKind.Number && prop.TryGetDouble(out double v))
+                    return Math.Abs(v) > double.Epsilon;
+            }
+            return defVal;
+        }
+
+        private int GetIntOrDefault(System.Text.Json.JsonElement el, string key, int defVal)
+        {
+            if (el.TryGetProperty(key, out var prop) && prop.TryGetInt32(out int v))
+                return v;
             return defVal;
         }
 
