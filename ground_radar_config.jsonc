@@ -1,0 +1,90 @@
+{
+  // Radar configuration parameters
+  "radar": {
+    "maxRange": 120000,                // Maximum detection range in meters
+    "beamWidthDeg": 12.0,              // Antenna beam width in degrees
+    "rotationSpeedDegSec": 36,         // Azimuth scan speed in degrees per second
+    "falseAlarmDensity": 1e-9,         // Probability density for false alarms
+
+    // Doppler processing settings
+    "useDopplerProcessing": true,      // Enable Doppler based velocity estimation
+    "velocityNoiseStd": 1.5,           // Standard deviation of velocity noise
+    "useDopplerCFAR": true,            // Use CFAR on the Doppler axis
+    "dopplerCFARWindow": 20.0,         // Doppler CFAR window size
+    "dopplerCFARGuard": 2.5,           // Doppler CFAR guard size
+    "dopplerCFARThresholdMultiplier": 0.005, // CFAR threshold multiplier
+
+    // Antenna and power characteristics
+    "frequencyHz": 3000000000,         // Transmit frequency in Hz (3 GHz)
+    "txPower_dBm": 70,                 // Transmit power in dBm
+    "antennaGain_dBi": 107,            // Antenna gain in dBi
+
+    // SNR and detection thresholds
+    "snr0_dB": 30.0,                   // Reference SNR for 1 m^2 target at reference range
+    "referenceRange": 20000.0,         // Range where snr0_dB is specified
+    "requiredSNR_dB": -20.0,           // Minimum SNR required for detection
+
+    // Tracking lock parameters
+    "lockRange": 70000,                // Maximum range for target lock
+    "lockSNRThreshold_dB": 3.0,        // Minimum SNR for maintaining lock
+
+    // Measurement noise and CFAR settings
+    "rangeNoiseBase": 80.0,            // Base range measurement noise
+    "angleNoiseBase": 0.0005,          // Base angle measurement noise
+    "cfarWindowWidth": 200.0,          // CFAR window width in meters
+    "cfarGuardWidth": 1.0,             // CFAR guard region width in meters
+    "cfarThresholdMultiplier": 0.0005, // CFAR threshold multiplier
+    "clusterDistanceMeters": 50.0,     // Clustering distance for detections
+
+    // Ground radar setup
+    "radarType": "ground",             // Radar type (ground based search radar)
+    "showAzimuthBars": true,           // Display azimuth bars in the UI
+    "showElevationBars": true,         // Display elevation bars in the UI
+    "antennaAzimuthScan": 140,         // Azimuth scan coverage in degrees
+    "antennaElevationBars": 4,         // Number of elevation bars
+    "barSpacingDeg": 1.0,              // Elevation bar spacing in degrees
+    "tiltOffsetDeg": 10,               // Fixed elevation tilt offset
+    "pathLossExponent_dB": 40.0,       // Propagation loss exponent
+
+    // Additional simulation controls
+    "beamSpeedMultiplier": 5.0,        // Simulation speed-up for beam motion
+    "aesaElevationOscFreq": 0.1        // AESA elevation oscillation frequency
+  },
+
+  // List of targets to simulate
+  "targets": [
+    {
+      "x": 20000, "y": 15000, "z": 2000,          // Starting position of target in meters
+      "speed": 180, "headingDeg": 45,              // Initial speed (m/s) and heading (deg)
+      "climbRate": 5, "turnRateDeg": 0.5,          // Climb and turn rates
+      "processStd": 0.5,                            // Process noise standard deviation
+      "aircraftName": "Boeing 737",                // Friendly name for display
+      "rcs": 15.0                                   // Radar cross section in square meters
+    },
+    {
+      "x": -25000, "y": -20000, "z": 1000,
+      "speed": 220, "headingDeg": -60,
+      "climbRate": 0, "turnRateDeg": 3,
+      "processStd": 0.5,
+      "aircraftName": "Airbus A320",
+      "rcs": 15.0
+    }
+  ],
+
+  // Track manager settings controlling the tracker behaviour
+  "trackManager": {
+    "initGateThreshold": 12.07,        // Initialization gating threshold
+    "initRequiredHits": 3,             // Hits required to start a track
+    "initScanWindow": 6,               // Number of scans to consider for init
+    "initPosStd": 20.0,                // Initial position standard deviation
+    "initVelStd": 5.0,                 // Initial velocity standard deviation
+    "gatingThreshold": 12.07,          // Gating threshold for measurement update
+    "accelNoise": 2.0,                 // Process noise acceleration
+    "probDetection": 0.99,             // Probability of detection
+    "probSurvival": 0.995,             // Probability that a track survives
+    "pruneThreshold": 0.001,           // Threshold for pruning low-probability tracks
+    "maxTrackMergeDist": 1500.0,       // Maximum distance to merge tracks
+    "maxTrackAge": 20,                 // Maximum track age before deletion
+    "candidateMergeDistance": 500.0    // Distance for merging candidate tracks
+  }
+}
