@@ -203,6 +203,10 @@ namespace RealRadarSim.Forms
                 radar.UnlockTarget();
                 Console.WriteLine("[RadarForm] Radar unlocked (bar-scan resumed).");
             }
+            else if (e.KeyCode == Keys.M)
+            {
+                engine.LaunchMissile();
+            }
 
             this.Invalidate();
         }
@@ -453,6 +457,15 @@ namespace RealRadarSim.Forms
                 {
                     g.DrawEllipse(highlightPen, hx - 10, hy - 10, 20, 20);
                 }
+            }
+
+            // Draw launched missiles
+            var missiles = engine.GetMissiles();
+            foreach (var m in missiles)
+            {
+                int mx = (int)(m.Pos[0] * scale);
+                int my = (int)(m.Pos[1] * scale);
+                g.FillEllipse(Brushes.Orange, mx - 4, my - 4, 8, 8);
             }
 
             var targetsList = engine.GetTargets();

@@ -7,6 +7,7 @@ using RealRadarSim.Models;
 using RealRadarSim.Tracking;
 using RealRadarSim.Logging;
 using RealRadarSim.Processing;
+using RealRadarSim.Missile;
 
 namespace RealRadarSim.Engine
 {
@@ -21,6 +22,7 @@ namespace RealRadarSim.Engine
         private PulseDopplerProcessor pdProcessor;
         private Random rng;
         private List<Measurement> lastMeasurements = new List<Measurement>();
+        private List<Fox1Missile> missiles = new List<Fox1Missile>();
 
         // Throttle for target hit logging (in simulation seconds)
         private double lastTargetHitLogTime = -1.0;
@@ -547,8 +549,24 @@ namespace RealRadarSim.Engine
             }
 
             Radar.UpdateTrackAssignments(tracks);
+
+            // Update missiles using the locked track as reference
+            foreach (var m in missiles)
+                m.Update(dt);
+
+            missiles.RemoveAll(msl => !msl.Active || msl.HitTarget);
         }
+
+        public void LaunchMissile()
+        {
+            if (!Radar.IsLocked) return;
+            var trk = Radar.GetLockedTrack();
+            if (trk == null) return;
+            var start = MathNet.Numerics.LinearAlgebra.Double.DenseVector.OfArray(new double[] { 0.0, 0.0, 0.0 });
+            missiles.Add(new Fox1Missile(start, trk));
         }
+
+        public IReadOnlyList<Fox1Missile> GetMissiles() => missiles.AsReadOnly();
 
         public double GetDt() => dt;
         public double GetCurrentBeamAngle()

@@ -368,6 +368,8 @@ namespace RealRadarSim.Models
             }
         }
 
+        public JPDA_Track GetLockedTrack() => lockedTrack;
+
         public void UpdateTrackAssignments(List<JPDA_Track> tracks)
         {
             if (!UseAesaMode || LockBeam == null)
