@@ -281,6 +281,16 @@ namespace RealRadarSim.Forms
                     g.TranslateTransform(cx, cy);
                     g.TranslateTransform(panX, panY);
                     g.ScaleTransform(zoomFactor, zoomFactor);
+
+                    // Draw a simple AESA radar representation at the origin
+                    float aesaSize = 20f;
+                    var rect = new RectangleF(-aesaSize / 2f, -aesaSize / 2f, aesaSize, aesaSize);
+                    using (Brush b = new SolidBrush(Color.FromArgb(60, Color.Cyan)))
+                    using (Pen p = new Pen(Color.Cyan, 2))
+                    {
+                        g.FillRectangle(b, rect);
+                        g.DrawRectangle(p, rect.X, rect.Y, rect.Width, rect.Height);
+                    }
                 }
                 else
                 {

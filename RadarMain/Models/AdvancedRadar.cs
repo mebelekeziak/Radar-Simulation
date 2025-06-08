@@ -28,6 +28,10 @@ namespace RealRadarSim.Models
         private readonly double angleNoiseBase;
 
         public double TiltOffsetDeg { get; set; } = 0.0;
+        public AesaPatternOptions PatternOptions { get; set; } = new AesaPatternOptions();
+        public List<double> HopFrequencies { get; private set; } = new List<double>();
+        private int hopIndex = 0;
+        private readonly Dictionary<double, double[]> steeringCache = new Dictionary<double, double[]>();
 
         private readonly Random rng;
 
@@ -296,6 +300,22 @@ namespace RealRadarSim.Models
             lockedTrack = null;
         }
 
+        public void SetHopFrequencies(IEnumerable<double> hops)
+        {
+            HopFrequencies = hops.ToList();
+            hopIndex = 0;
+        }
+
+        private double GetNextHop()
+        {
+            if (HopFrequencies.Count == 0) return FrequencyHz;
+            double f = HopFrequencies[hopIndex];
+            hopIndex = (hopIndex + 1) % HopFrequencies.Count;
+            if (!steeringCache.ContainsKey(f))
+                steeringCache[f] = AesaPattern.ComputeWeights(PatternOptions);
+            return f;
+        }
+
         public void UpdateBeam(double dt)
         {
             double effectiveMultiplier = UseAesaMode ? BeamSpeedMultiplier : 1.0;
@@ -393,6 +413,7 @@ namespace RealRadarSim.Models
         public List<Measurement> GetMeasurements(List<TargetCT> targets)
         {
             var rawMeas = new List<Measurement>();
+            FrequencyHz = GetNextHop();
             int targetMeasurementCount = 0;
             foreach (var tgt in targets)
             {
