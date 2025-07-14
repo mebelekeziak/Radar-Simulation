@@ -9,3 +9,6 @@ Simulation point is to properly simulate a radar.
 
 # Why?
 I got bored and I created this
+
+# TODO:
+improve stability and performance, better RCS modeling
