@@ -12,3 +12,5 @@ I got bored and I created this
 
 # TODO:
 improve stability and performance, better RCS modeling
+
+# also this isnt an analysis tool but rather gamified radar screen? i mean yall can strip it off and just modify the code for ur purposes ig
