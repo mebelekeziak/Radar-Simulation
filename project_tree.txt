@@ -1,0 +1,30 @@
+Folder PATH listing for volume cp (cheese pizza)
+Volume serial number is EC11-B896
+C:\USERS\DAWID\DESKTOP\RADARAPI\RADAR\ASSETS
+Invalid path - \USERS\DAWID\DESKTOP\RADARAPI\RADAR\ASSETS
+No subfolders exist 
+
+Folder PATH listing for volume cp (cheese pizza)
+Volume serial number is EC11-B896
+C:\USERS\DAWID\DESKTOP\RADARAPI\RADAR\ENGINE
+Invalid path - \USERS\DAWID\DESKTOP\RADARAPI\RADAR\ENGINE
+No subfolders exist 
+
+Folder PATH listing for volume cp (cheese pizza)
+Volume serial number is EC11-B896
+C:\USERS\DAWID\DESKTOP\RADARAPI\RADAR\FORMS
+Invalid path - \USERS\DAWID\DESKTOP\RADARAPI\RADAR\FORMS
+No subfolders exist 
+
+Folder PATH listing for volume cp (cheese pizza)
+Volume serial number is EC11-B896
+C:\USERS\DAWID\DESKTOP\RADARAPI\RADAR\MODELS
+Invalid path - \USERS\DAWID\DESKTOP\RADARAPI\RADAR\MODELS
+No subfolders exist 
+
+Folder PATH listing for volume cp (cheese pizza)
+Volume serial number is EC11-B896
+C:\USERS\DAWID\DESKTOP\RADARAPI\RADAR\TRACKING
+Invalid path - \USERS\DAWID\DESKTOP\RADARAPI\RADAR\TRACKING
+No subfolders exist 
+

@@ -5,6 +5,7 @@ using MathNet.Numerics.Distributions;
 using MathNet.Numerics.LinearAlgebra;
 using MathNet.Numerics.LinearAlgebra.Double;
 using RealRadarSim.Models;
+using RealRadarSim.Utils;
 
 namespace RealRadarSim.Tracking
 {
@@ -267,8 +268,8 @@ namespace RealRadarSim.Tracking
                         double b = beta.ContainsKey((i, m)) ? beta[(i, m)] : 0.0;
                         if (b < 1e-12) continue;
                         Vector<double> diff = ToVector(measurements[m]) - zEff;
-                        diff[1] = NormalizeAngle(diff[1]);
-                        diff[2] = NormalizeAngle(diff[2]);
+                        diff[1] = MathUtil.NormalizeAngle(diff[1]);
+                        diff[2] = MathUtil.NormalizeAngle(diff[2]);
                         Pzz += b * (diff.ToColumnMatrix() * diff.ToRowMatrix());
                     }
                     Pzz /= sumBeta;
@@ -514,8 +515,8 @@ namespace RealRadarSim.Tracking
             Vector<double> zPred = track.Filter.H(track.Filter.State);
             Vector<double> zMeas = ToVector(m);
             Vector<double> y = zMeas - zPred;
-            y[1] = NormalizeAngle(y[1]);
-            y[2] = NormalizeAngle(y[2]);
+            y[1] = MathUtil.NormalizeAngle(y[1]);
+            y[2] = MathUtil.NormalizeAngle(y[2]);
             Matrix<double> S = track.Filter.S();
             Matrix<double> SInv = S.Inverse();
             double dist2 = (y.ToRowMatrix() * SInv * y.ToColumnMatrix())[0, 0];
@@ -529,8 +530,8 @@ namespace RealRadarSim.Tracking
         {
             Vector<double> zPred = track.Filter.H(track.Filter.State);
             Vector<double> y = z - zPred;
-            y[1] = NormalizeAngle(y[1]);
-            y[2] = NormalizeAngle(y[2]);
+            y[1] = MathUtil.NormalizeAngle(y[1]);
+            y[2] = MathUtil.NormalizeAngle(y[2]);
 
             Matrix<double> S = track.Filter.S();
             double det = S.Determinant();
@@ -550,15 +551,6 @@ namespace RealRadarSim.Tracking
             return DenseVector.OfArray(new double[] { m.Range, m.Azimuth, m.Elevation });
         }
 
-        /// <summary>
-        /// Normalizes an angle to the range [-π, π].
-        /// </summary>
-        private double NormalizeAngle(double angle)
-        {
-            while (angle > Math.PI) angle -= 2 * Math.PI;
-            while (angle < -Math.PI) angle += 2 * Math.PI;
-            return angle;
-        }
 
         /// <summary>
         /// Converts a measurement in spherical coordinates to an initial Cartesian state.

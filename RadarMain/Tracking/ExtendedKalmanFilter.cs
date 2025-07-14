@@ -1,6 +1,7 @@
 ﻿using System;
 using MathNet.Numerics.LinearAlgebra;
 using MathNet.Numerics.LinearAlgebra.Double;
+using RealRadarSim.Utils;
 
 namespace RealRadarSim.Tracking
 {
@@ -91,7 +92,7 @@ namespace RealRadarSim.Tracking
                 Q[vel, acc] = dt2 / 2.0 * q;
                 Q[acc, pos] = dt3 / 6.0 * q;
                 Q[acc, vel] = dt2 / 2.0 * q;
-                Q[acc, acc] = dt;
+                Q[acc, acc] = dt * q;   // was 'dt' — now 'dt * q'
             }
 
             // Predict the covariance.
@@ -126,8 +127,8 @@ namespace RealRadarSim.Tracking
                 // 1. Compute predicted measurement and innovation.
                 Vector<double> hVal = H(State);
                 Vector<double> y = z - hVal;
-                y[1] = NormalizeAngle(y[1]);
-                y[2] = NormalizeAngle(y[2]);
+                y[1] = MathUtil.NormalizeAngle(y[1]);
+                y[2] = MathUtil.NormalizeAngle(y[2]);
 
                 // 2. Compute Jacobian at current state.
                 Matrix<double> Hjac = Jacobian(State);
@@ -156,8 +157,8 @@ namespace RealRadarSim.Tracking
             // Recompute final innovation.
             Vector<double> finalHVal = H(State);
             Vector<double> finalY = z - finalHVal;
-            finalY[1] = NormalizeAngle(finalY[1]);
-            finalY[2] = NormalizeAngle(finalY[2]);
+            finalY[1] = MathUtil.NormalizeAngle(finalY[1]);
+            finalY[2] = MathUtil.NormalizeAngle(finalY[2]);
 
             Matrix<double> HjacFinal = Jacobian(State);
             Matrix<double> S_mat_final = HjacFinal * Covariance * HjacFinal.Transpose() + customMeasurementCov;
@@ -256,16 +257,5 @@ namespace RealRadarSim.Tracking
             return R;
         }
 
-        /// <summary>
-        /// Normalizes an angle to the range [-π, π].
-        /// </summary>
-        private double NormalizeAngle(double angle)
-        {
-            while (angle > Math.PI)
-                angle -= 2.0 * Math.PI;
-            while (angle < -Math.PI)
-                angle += 2.0 * Math.PI;
-            return angle;
-        }
     }
 }
