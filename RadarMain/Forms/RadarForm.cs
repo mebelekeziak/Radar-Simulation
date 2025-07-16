@@ -21,14 +21,21 @@ namespace RealRadarSim.Forms
         private double scale;
         private int radarDisplayRadius;
 
-        private Pen circlePen = new Pen(Color.Green, 1);
-        private Pen crossPen = new Pen(Color.Green, 1);
-        private Pen sweepPen = new Pen(Color.Lime, 2);
+        // Neon pen/brush set
+        private Pen circlePen = new Pen(Color.FromArgb(90, 0, 255, 160), 2) { DashStyle = DashStyle.Dot };
+        private Pen crossPen = new Pen(Color.FromArgb(90, 120, 255, 240), 1.5f);
+        private Pen sweepPen = new Pen(Color.FromArgb(255, 64, 255, 128), 2.5f);
+        private Pen shadowPen = new Pen(Color.FromArgb(35, 64, 255, 128), 16) { DashStyle = DashStyle.Solid };
+        private Pen headingLinePen = new Pen(Color.FromArgb(200, 255, 255, 50), 2.2f) { DashCap = DashCap.Round };
 
         private Font trackFont;
+        private Font uiFont;
         private Brush textBrush = new SolidBrush(Color.White);
-        private Brush targetDetailBrush = new SolidBrush(Color.LimeGreen);
-        private Pen headingLinePen = new Pen(Color.Yellow, 2);
+        private Brush labelShadow = new SolidBrush(Color.FromArgb(50, 0, 0, 0));
+        private Brush targetDetailBrush = new SolidBrush(Color.Cyan);
+        private Brush highlightBrush = new SolidBrush(Color.FromArgb(180, 255, 0, 255));
+        private Brush statusPanelBrush = new SolidBrush(Color.FromArgb(200, 20, 30, 40));
+        private Pen highlightPen = new Pen(Color.FromArgb(200, 255, 40, 220), 3.5f);
 
         private Image planeImage;
         private Point mousePos;
@@ -45,6 +52,7 @@ namespace RealRadarSim.Forms
         private bool debugMode = false;
 
         private JPDA_Track hoveredTrack = null;
+        private JPDA_Track lockedTrack = null;
 
         private PrivateFontCollection privateFonts = new PrivateFontCollection();
 
@@ -80,18 +88,18 @@ namespace RealRadarSim.Forms
 
                     string tempFontPath = Path.Combine(Path.GetTempPath(), "RobotoCondensed.ttf");
                     using (FileStream fs = new FileStream(tempFontPath, FileMode.Create, FileAccess.Write))
-                    {
                         fontStream.CopyTo(fs);
-                    }
 
                     privateFonts.AddFontFile(tempFontPath);
                 }
-                trackFont = new Font(privateFonts.Families[0], 10);
+                trackFont = new Font(privateFonts.Families[0], 11, FontStyle.Bold);
+                uiFont = new Font(privateFonts.Families[0], 12, FontStyle.Bold);
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error loading font RobotoCondensed.ttf: " + ex.Message);
-                trackFont = new Font("Arial", 10);
+                trackFont = new Font("Segoe UI", 11, FontStyle.Bold);
+                uiFont = new Font("Segoe UI", 12, FontStyle.Bold);
             }
 
             engine = new SimulationEngine(new Random());
@@ -107,7 +115,7 @@ namespace RealRadarSim.Forms
             this.Text = "Radar Sim";
             this.BackColor = Color.Black;
 
-            radarDisplayRadius = Math.Min(this.ClientSize.Width, this.ClientSize.Height) / 2 - 20;
+            radarDisplayRadius = Math.Min(this.ClientSize.Width, this.ClientSize.Height) / 2 - 32;
             scale = radarDisplayRadius / engine.GetMaxRange();
 
             this.MouseMove += Form_MouseMove;
@@ -133,6 +141,7 @@ namespace RealRadarSim.Forms
                     if (radar.RadarType.ToLower() == "aircraft")
                     {
                         radar.LockTarget(hoveredTrack);
+                        lockedTrack = hoveredTrack;
                         Console.WriteLine($"[RadarForm] Locked trackID={hoveredTrack.TrackId}, P={hoveredTrack.ExistenceProb:F2}");
                     }
                 }
@@ -162,66 +171,49 @@ namespace RealRadarSim.Forms
                 panY += dy;
                 lastMousePos = e.Location;
             }
-
             this.Invalidate();
         }
 
         private void Form_MouseWheel(object? sender, MouseEventArgs e)
         {
-            if (e.Delta > 0)
-            {
-                zoomFactor += zoomStep;
-                if (zoomFactor > maxZoom) zoomFactor = maxZoom;
-            }
-            else
-            {
-                zoomFactor -= zoomStep;
-                if (zoomFactor < minZoom) zoomFactor = minZoom;
-            }
+            if (e.Delta > 0) zoomFactor = Math.Min(zoomFactor + zoomStep, maxZoom);
+            else zoomFactor = Math.Max(zoomFactor - zoomStep, minZoom);
             this.Invalidate();
         }
 
         private void Form_KeyDown(object? sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Oemplus || e.KeyCode == Keys.Add)
-            {
-                zoomFactor += zoomStep;
-                if (zoomFactor > maxZoom) zoomFactor = maxZoom;
-            }
+                zoomFactor = Math.Min(zoomFactor + zoomStep, maxZoom);
             else if (e.KeyCode == Keys.OemMinus || e.KeyCode == Keys.Subtract)
-            {
-                zoomFactor -= zoomStep;
-                if (zoomFactor < minZoom) zoomFactor = minZoom;
-            }
+                zoomFactor = Math.Max(zoomFactor - zoomStep, minZoom);
             else if (e.KeyCode == Keys.D)
-            {
                 debugMode = !debugMode;
-            }
             else if (e.KeyCode == Keys.U)
             {
                 var radar = engine.GetRadar();
                 radar.UnlockTarget();
+                lockedTrack = null;
                 Console.WriteLine("[RadarForm] Radar unlocked (bar-scan resumed).");
             }
-
             this.Invalidate();
         }
 
         private TargetCT FindTargetByFlightName(string flightName)
         {
             foreach (var tgt in engine.GetTargets())
-            {
                 if (tgt.AircraftName == flightName)
                     return tgt;
-            }
             return null;
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-
             Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
             int cx = this.ClientSize.Width / 2;
             int cy = this.ClientSize.Height / 2;
 
@@ -229,6 +221,7 @@ namespace RealRadarSim.Forms
             g.TranslateTransform(panX, panY);
             g.ScaleTransform(zoomFactor, zoomFactor);
 
+            // --- Range rings and cross
             for (int i = 1; i <= 4; i++)
             {
                 int r = (radarDisplayRadius * i) / 4;
@@ -237,22 +230,25 @@ namespace RealRadarSim.Forms
             g.DrawLine(crossPen, -radarDisplayRadius, 0, radarDisplayRadius, 0);
             g.DrawLine(crossPen, 0, -radarDisplayRadius, 0, radarDisplayRadius);
 
+            // --- Radar sweep/beam
             var radar = engine.GetRadar();
             if (radar.RadarType.ToLower() == "aircraft")
             {
                 if (radar.UseAesaMode)
                 {
-                    // Draw the AESA scanning cone limited to -70° and 70°.
-                    float sectorStartAngle = -70.0f;
-                    float sectorSweepAngle = 140.0f;
-                    using (Brush sectorBrush = new SolidBrush(Color.FromArgb(40, Color.Cyan)))
+                    float sectorStartAngle = -70.0f, sectorSweepAngle = 140.0f;
+                    using (GraphicsPath p = new GraphicsPath())
                     {
-                        g.FillPie(sectorBrush,
-                            -radarDisplayRadius, -radarDisplayRadius,
-                            radarDisplayRadius * 2, radarDisplayRadius * 2,
-                            sectorStartAngle, sectorSweepAngle);
+                        p.AddPie(-radarDisplayRadius, -radarDisplayRadius,
+                                 radarDisplayRadius * 2, radarDisplayRadius * 2,
+                                 sectorStartAngle, sectorSweepAngle);
+                        using (PathGradientBrush grad = new PathGradientBrush(p))
+                        {
+                            grad.CenterColor = Color.FromArgb(50, 0, 255, 255);
+                            grad.SurroundColors = new[] { Color.Transparent };
+                            g.FillPath(grad, p);
+                        }
                     }
-                    // Draw each dynamic AESA beam.
                     AdvancedRadar advRadar = radar;
                     if (advRadar.AesaBeams != null)
                     {
@@ -262,25 +258,22 @@ namespace RealRadarSim.Forms
                             double bw = radar.BeamWidthRad;
                             float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
                             float sweepAngle = (float)(bw * 180.0 / Math.PI);
-                            using (Brush beamBrush = new SolidBrush(Color.FromArgb(80, Color.Lime)))
+                            using (GraphicsPath beamPath = new GraphicsPath())
                             {
-                                g.FillPie(beamBrush,
-                                    -radarDisplayRadius, -radarDisplayRadius,
+                                beamPath.AddPie(-radarDisplayRadius, -radarDisplayRadius,
                                     radarDisplayRadius * 2, radarDisplayRadius * 2,
                                     startAngle, sweepAngle);
+                                using (PathGradientBrush grad = new PathGradientBrush(beamPath))
+                                {
+                                    grad.CenterColor = Color.FromArgb(150, 0, 255, 128);
+                                    grad.SurroundColors = new[] { Color.Transparent };
+                                    g.FillPath(grad, beamPath);
+                                }
                             }
-                            g.DrawPie(sweepPen,
-                                -radarDisplayRadius, -radarDisplayRadius,
-                                radarDisplayRadius * 2, radarDisplayRadius * 2,
-                                startAngle, sweepAngle);
+                            g.DrawPie(sweepPen, -radarDisplayRadius, -radarDisplayRadius,
+                                radarDisplayRadius * 2, radarDisplayRadius * 2, startAngle, sweepAngle);
                         }
                     }
-                    // Draw max azimuth text (fixed at 70°).
-                    g.ResetTransform();
-                    g.DrawString("Radar Max Azimuth: 70°", trackFont, textBrush, 20, 20);
-                    g.TranslateTransform(cx, cy);
-                    g.TranslateTransform(panX, panY);
-                    g.ScaleTransform(zoomFactor, zoomFactor);
                 }
                 else
                 {
@@ -288,16 +281,19 @@ namespace RealRadarSim.Forms
                     double bw = radar.BeamWidthRad;
                     float startAngle = (float)((az - bw / 2.0) * 180.0 / Math.PI);
                     float sweepAngle = (float)(bw * 180.0 / Math.PI);
-
-                    using (Brush wedgeBrush = new SolidBrush(Color.FromArgb(80, Color.Lime)))
+                    using (GraphicsPath wedge = new GraphicsPath())
                     {
-                        g.FillPie(wedgeBrush,
-                            -radarDisplayRadius, -radarDisplayRadius,
+                        wedge.AddPie(-radarDisplayRadius, -radarDisplayRadius,
                             radarDisplayRadius * 2, radarDisplayRadius * 2,
                             startAngle, sweepAngle);
+                        using (PathGradientBrush grad = new PathGradientBrush(wedge))
+                        {
+                            grad.CenterColor = Color.FromArgb(130, 64, 255, 128);
+                            grad.SurroundColors = new[] { Color.Transparent };
+                            g.FillPath(grad, wedge);
+                        }
                     }
-                    g.DrawPie(sweepPen,
-                        -radarDisplayRadius, -radarDisplayRadius,
+                    g.DrawPie(sweepPen, -radarDisplayRadius, -radarDisplayRadius,
                         radarDisplayRadius * 2, radarDisplayRadius * 2,
                         startAngle, sweepAngle);
                 }
@@ -307,62 +303,14 @@ namespace RealRadarSim.Forms
                 double beamAngle = engine.GetCurrentBeamAngle();
                 float x2 = (float)(radarDisplayRadius * Math.Cos(beamAngle));
                 float y2 = (float)(radarDisplayRadius * Math.Sin(beamAngle));
+                // Neon line with shadow
+                g.DrawLine(shadowPen, 0, 0, x2, y2);
                 g.DrawLine(sweepPen, 0, 0, x2, y2);
-            }
-
-            if (radar.RadarType.ToLower() == "aircraft" && radar.ShowElevationBars)
-            {
-                double barSpacingDeg = 2.0;
-                double barHalfRad = (barSpacingDeg * Math.PI / 180.0) * 0.5;
-                double eLow = radar.CurrentElevation - barHalfRad;
-                double eHigh = radar.CurrentElevation + barHalfRad;
-
-                double[] coverageRanges = { 10000, 20000, 30000, 40000, 50000 };
-                string barInfo =
-                    $"Elev Bar {radar.CurrentElevationBar + 1}/{radar.AntennaHeight}\n" +
-                    $"Angles: {eLow * 180.0 / Math.PI:F1}° to {eHigh * 180.0 / Math.PI:F1}°\n" +
-                    "Coverage:\n" +
-                    "Click on target to lock, U to unlock\n";
-
-                foreach (var rngM in coverageRanges)
-                {
-                    double altLow = rngM * Math.Sin(eLow);
-                    double altHigh = rngM * Math.Sin(eHigh);
-                    barInfo += $" @ {rngM / 1000.0:F1} km: {altLow / 1000.0:F1}–{altHigh / 1000.0:F1} km\n";
-                }
-
-                g.ResetTransform();
-                g.DrawString(barInfo, trackFont, textBrush, this.ClientSize.Width - 230, 20);
-                g.TranslateTransform(cx, cy);
-                g.TranslateTransform(panX, panY);
-                g.ScaleTransform(zoomFactor, zoomFactor);
-            }
-
-            if (debugMode)
-            {
-                var rawMeas = engine.GetLastMeasurements();
-                using (Pen mp = new Pen(Color.Red, 2))
-                {
-                    foreach (var m in rawMeas)
-                    {
-                        double mx = m.Range * Math.Cos(m.Azimuth);
-                        double my = m.Range * Math.Sin(m.Azimuth);
-                        int ix = (int)(mx * scale);
-                        int iy = (int)(my * scale);
-                        g.DrawEllipse(mp, ix - 3, iy - 3, 6, 6);
-                    }
-                }
-                g.ResetTransform();
-                g.DrawString($"Raw Meas: {engine.GetLastMeasurements().Count}", trackFont, textBrush, 10, 10);
-                g.TranslateTransform(cx, cy);
-                g.TranslateTransform(panX, panY);
-                g.ScaleTransform(zoomFactor, zoomFactor);
             }
 
             var tracks = engine.GetTracks();
             hoveredTrack = null;
             float closestDist = float.MaxValue;
-
             float invZoom = 1.0f / zoomFactor;
             float realMouseX = (mousePos.X - cx - panX) * invZoom;
             float realMouseY = (mousePos.Y - cy - panY) * invZoom;
@@ -380,6 +328,7 @@ namespace RealRadarSim.Forms
                 double headingRad = Math.Atan2(vy, vx);
                 double headingDeg = headingRad * 180.0 / Math.PI;
 
+                // SNR text
                 string snrInfo = "";
                 if (!string.IsNullOrEmpty(trk.FlightName))
                 {
@@ -388,10 +337,7 @@ namespace RealRadarSim.Forms
                     {
                         double z = trk.Filter.State[2];
                         double r = Math.Sqrt(x * x + y * y + z * z);
-
-                        // Exact SNR coming from the radar model
                         double snr_dB = radar.GetSNR_dB(target.RCS, r);
-
                         snrInfo = $", SNR={snr_dB:F1} dB";
                     }
                 }
@@ -402,7 +348,7 @@ namespace RealRadarSim.Forms
                 float dx = (float)(tx - realMouseX);
                 float dy = (float)(ty - realMouseY);
                 float distPix = (float)Math.Sqrt(dx * dx + dy * dy);
-                if (distPix < 12f && distPix < closestDist)
+                if (distPix < 18f && distPix < closestDist)
                 {
                     closestDist = distPix;
                     hoveredTrack = trk;
@@ -413,12 +359,25 @@ namespace RealRadarSim.Forms
                 float rot = (float)(90.0 - headingDeg);
                 g.RotateTransform(rot);
 
-                int imgW = planeImage.Width;
-                int imgH = planeImage.Height;
+                int imgW = planeImage.Width, imgH = planeImage.Height;
                 g.DrawImage(planeImage, -imgW / 2, -imgH / 2, imgW, imgH);
                 g.DrawLine(headingLinePen, 0, 0, 0, -imgH / 2);
+
                 g.Restore(gs);
 
+                if (trk == hoveredTrack || trk == lockedTrack)
+                {
+                    float t = (float)(DateTime.Now.Millisecond / 1000.0f);
+                    int pulse = 12 + (int)(Math.Abs(Math.Sin(t * Math.PI * 2)) * 6);
+                    using (Pen neon = new Pen(Color.Magenta, pulse))
+                    {
+                        neon.Color = Color.FromArgb(120, neon.Color);
+                        g.DrawEllipse(neon, tx - 16, ty - 16, 32, 32);
+                    }
+                    g.DrawEllipse(highlightPen, tx - 11, ty - 11, 22, 22);
+                }
+
+                g.DrawString(details, trackFont, labelShadow, tx + imgW / 2 + 7, ty - imgH / 2 + 2);
                 g.DrawString(details, trackFont, targetDetailBrush, tx + imgW / 2 + 5, ty - imgH / 2);
             }
 
@@ -428,14 +387,14 @@ namespace RealRadarSim.Forms
                 double yy = hoveredTrack.Filter.State[1];
                 int hx = (int)(xx * scale);
                 int hy = (int)(yy * scale);
-                using (Pen highlightPen = new Pen(Color.Magenta, 2))
+                using (Pen pulse = new Pen(Color.Cyan, 2.5f))
                 {
-                    g.DrawEllipse(highlightPen, hx - 10, hy - 10, 20, 20);
+                    pulse.DashStyle = DashStyle.DashDot;
+                    g.DrawEllipse(pulse, hx - 24, hy - 24, 48, 48);
                 }
             }
-
-            var targetsList = engine.GetTargets();
-            foreach (var tgt in targetsList)
+            // true positions
+            foreach (var tgt in engine.GetTargets())
             {
                 double tx = tgt.State[0];
                 double ty = tgt.State[1];
@@ -446,19 +405,63 @@ namespace RealRadarSim.Forms
                 float dx2 = (float)(px - realMouseX);
                 float dy2 = (float)(py - realMouseY);
                 float distPix2 = (float)Math.Sqrt(dx2 * dx2 + dy2 * dy2);
-                if (distPix2 < 10.0f)
+                if (distPix2 < 12.0f)
                 {
                     double distM = Math.Sqrt(tx * tx + ty * ty + tz * tz);
                     double speed = tgt.State[3];
                     double alt = tz;
                     string info = $"Dist={distM:F0}m, V={speed:F0}m/s, Alt={alt:F0}m";
-                    g.DrawString(info, trackFont, textBrush, px + 10, py + 10);
+                    g.DrawString(info, trackFont, textBrush, px + 12, py + 8);
+                }
+                using (Brush b = new SolidBrush(Color.FromArgb(110, 60, 180, 255)))
+                    g.FillEllipse(b, px - 5, py - 5, 10, 10);
+            }
+
+            g.ResetTransform();
+            DrawStatusPanel(g, radar, tracks.Count, cx, cy);
+
+            if (debugMode)
+            {
+                var rawMeas = engine.GetLastMeasurements();
+                using (Pen mp = new Pen(Color.Red, 2))
+                {
+                    foreach (var m in rawMeas)
+                    {
+                        double mx = m.Range * Math.Cos(m.Azimuth);
+                        double my = m.Range * Math.Sin(m.Azimuth);
+                        int ix = (int)(mx * scale + cx + panX);
+                        int iy = (int)(my * scale + cy + panY);
+                        g.DrawEllipse(mp, ix - 4, iy - 4, 8, 8);
+                    }
                 }
             }
         }
 
-        private void RadarForm_Load(object sender, EventArgs e)
+
+        private void DrawStatusPanel(Graphics g, AdvancedRadar radar, int trackCount, int cx, int cy)
         {
+            string status =
+                $"Radar: {(radar.UseAesaMode ? "AESA" : "Mechanical")}\n" +
+                $"Range: {engine.GetMaxRange() / 1000:F1} km\n" +
+                $"Zoom: {zoomFactor:F2}x\n" +
+                $"Tracks: {trackCount}\n" +
+                $"[D]ebug: {(debugMode ? "ON" : "off")}\n" +
+                $"[+/-] Zoom  [U] Unlock\n" +
+                $"Pan: Drag background";
+
+            SizeF sz = g.MeasureString(status, uiFont);
+            RectangleF panelRect = new RectangleF(18, this.ClientSize.Height - sz.Height - 36, sz.Width + 32, sz.Height + 24);
+
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(170, 30, 38, 45)))
+                g.FillRectangle(bg, panelRect);
+
+            using (Pen shadow = new Pen(Color.FromArgb(60, 0, 0, 0), 8))
+                g.DrawRectangle(shadow, Rectangle.Round(panelRect));
+
+            using (Pen neon = new Pen(Color.FromArgb(80, 60, 255, 255), 3))
+                g.DrawRectangle(neon, Rectangle.Round(panelRect));
+
+            g.DrawString(status, uiFont, textBrush, panelRect.Left + 12, panelRect.Top + 10);
         }
     }
 }
