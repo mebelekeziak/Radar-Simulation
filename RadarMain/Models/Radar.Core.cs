@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using MathNet.Numerics.Distributions;
 using RealRadarSim.Logging;
 using RealRadarSim.Tracking;
 using RealRadarSim.Utils;
@@ -9,7 +8,6 @@ namespace RealRadarSim.Models
 {
     public partial class AdvancedRadar
     {
-        // ———————————————————————————————————  unchanged fields  ——————————————————
         public double MaxRange { get; private set; }
         public double BeamWidthRad { get; private set; }
         private readonly double rotationSpeedRadSec;
@@ -51,11 +49,30 @@ namespace RealRadarSim.Models
         public bool UseAesaMode { get; set; } = false;
         public bool UseReferenceSNRModel { get; set; } = false;
         public int ConcurrentAesaBeams { get; set; } = 12;
+
+        // ———————————————————————————————————  AESA compatibility stubs  ————————————————
+        /// <summary>
+        /// Multiplies rotational speed when AESA mode is enabled.  
+        /// Exposed for backward compatibility; default = 1 (no speed change).
+        /// </summary>
+        public double BeamSpeedMultiplier { get; set; } = 1.0;
+
+        /// <summary>
+        /// Dummy per‑beam elevation oscillation frequency (rad/s).  
+        /// Kept as a field because legacy code references it directly.
+        /// </summary>
+        private double aesaElevationOscFreq = 0.0;
+        public double AesaElevationOscFreq
+        {
+            get => aesaElevationOscFreq;
+            set => aesaElevationOscFreq = value;
+        }
+
+        // ———————————————————————————————————  backward compatibility  ——————————————————
         public List<AesaBeam> AesaBeams { get; private set; }
-        private double aesaElevationOscFreq = 0.1; // Hz
-        public double BeamSpeedMultiplier { get; set; } = 5.0;
-        private JPDA_Track lockedTrack = null;
+
         public bool IsLocked => lockedTrack is not null;
+        private JPDA_Track lockedTrack = null;
         public bool UseDopplerProcessing { get; set; } = false;
         public double VelocityNoiseStd { get; set; } = 1.0;
         public bool UseDopplerCFAR { get; set; } = false;
@@ -71,36 +88,19 @@ namespace RealRadarSim.Models
         public double AtmosphericLossOneWay_dB { get; set; } = 1.0;
         public double WeatherLossOneWay_dB { get; set; } = 0.5;
 
-        // ------------------------------------------------‑ nested helper ------------------------------------------------
+        // ——————————————————————————————  AESA Beam placeholder class  ——————————————————
         public class AesaBeam
         {
-            public double CurrentAzimuth;   // rad (clamped ±70°)
-            public double CurrentElevation; // rad (±15°)
-            private double azPhase;
-            private double elPhase;
-            public AesaBeam(double initialAz, double initialEl, double azP, double elP)
+            public double CurrentAzimuth { get; set; }
+            public double CurrentElevation { get; set; }
+
+            public AesaBeam(double initialAz = 0, double initialEl = 0, double azP = 0, double elP = 0)
             {
                 CurrentAzimuth = initialAz;
                 CurrentElevation = initialEl;
-                azPhase = azP; elPhase = elP;
             }
-            public void Update(double dt, double rotSpeed, double elOsc)
-            {
-                azPhase += rotSpeed * dt;
-                elPhase += 2 * Math.PI * elOsc * dt;
-                // Azimuth sweep –70°…+70°
-                double minAz = -70.0 * MathUtil.DegToRad(1);
-                double maxAz = 70.0 * MathUtil.DegToRad(1);
-                double midAz = (minAz + maxAz) * 0.5;
-                double ampAz = (maxAz - minAz) * 0.5;
-                CurrentAzimuth = midAz + ampAz * Math.Sin(azPhase);
-                // Elevation sweep –15°…+15°
-                double minEl = -15.0 * MathUtil.DegToRad(1);
-                double maxEl = 15.0 * MathUtil.DegToRad(1);
-                double midEl = (minEl + maxEl) * 0.5;
-                double ampEl = (maxEl - minEl) * 0.5;
-                CurrentElevation = midEl + ampEl * Math.Sin(elPhase);
-            }
+
+            public void Update(double dt, double rotSpeed, double elOsc) { }
         }
 
         // ------------------------------------------------‑ ctor ------------------------------------------------
@@ -157,20 +157,11 @@ namespace RealRadarSim.Models
 
             InitializeAircraftMode();
 
-            // Pre‑allocate AESA beams if required
-            if (RadarType == "aircraft" && UseAesaMode)
-            {
-                AesaBeams = new List<AesaBeam>();
-                for (int i = 0; i < ConcurrentAesaBeams; i++)
-                {
-                    double azPhase = 2 * Math.PI * i / ConcurrentAesaBeams;
-                    double elPhase = azPhase; // harmless reuse
-                    AesaBeams.Add(new AesaBeam(0, 0, azPhase, elPhase));
-                }
-            }
+            // Preserve AESA API but disable backend functionality
+            AesaBeams = new List<AesaBeam>();
         }
 
-        // ------------- misc initialisation helpers (unchanged) ------------------
+        // ------------- misc initialisation helpers ------------------
         private void InitializeAircraftMode()
         {
             double barSpacingRad = MathUtil.DegToRad(2.0);
