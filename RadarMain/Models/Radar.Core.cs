@@ -7,13 +7,6 @@ using RealRadarSim.Utils;
 
 namespace RealRadarSim.Models
 {
-    /// <summary>
-    /// Core data and constructor for <see cref="AdvancedRadar"/>.  The behaviour
-    /// has been sliced into three partials:
-    ///   • Scan&nbsp;logic (<c>AdvancedRadar.Scan.cs</c>)
-    ///   • RF/propagation (<c>AdvancedRadar.RF.cs</c>)
-    ///   • Detection/CFAR (<c>AdvancedRadar.Detections.cs</c>)
-    /// </summary>
     public partial class AdvancedRadar
     {
         // ———————————————————————————————————  unchanged fields  ——————————————————
