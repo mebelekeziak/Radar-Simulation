@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using MoonSharp.Interpreter;
 using MoonSharp.Interpreter.Loaders;
 using RealRadarSim.Models;
@@ -71,7 +72,7 @@ namespace RealRadarSim.Engine
                 }
                 catch (Exception ex)
                 {
-                    System.IO.File.WriteAllText("lua_error.txt", $"Error loading config.lua: {ex.Message}");
+                    File.WriteAllText("lua_error.txt", $"Error loading config.lua: {ex.Message}");
                     InitializeDefaultConfiguration();
                 }
             }
@@ -171,7 +172,7 @@ namespace RealRadarSim.Engine
                                    $"FrequencyHz: {FrequencyHz}\n" +
                                    $"TxPower_dBm: {TxPower_dBm}\n" +
                                    $"AntennaGain_dBi: {AntennaGain_dBi}\n";
-                System.IO.File.AppendAllText("lua_error.txt", debugText);
+                File.AppendAllText("lua_error.txt", debugText);
 
                 Radar.ShowAzimuthBars = showAzimuthBars;
                 Radar.ShowElevationBars = showElevationBars;
@@ -188,7 +189,6 @@ namespace RealRadarSim.Engine
             {
                 InitializeDefaultConfiguration();
             }
-
 
             // Target configuration.
             var targetsDyn = config.Get("targets");
@@ -342,31 +342,38 @@ namespace RealRadarSim.Engine
             // Update tracks.
             trackManager.UpdateTracks(measurements, dt);
 
-            // Optional: assign flight names if tracks are near a known target.
+            // Optimized flight-name assignment using KD‑tree, squared distances, and parallelization
+            AssignFlightNamesToTracks();
+        }
+
+        private void AssignFlightNamesToTracks()
+        {
+            // Build KD‑tree on current Targets
+            var kdTree = KdTreeNode.Build(Targets, 0);
             var tracks = trackManager.GetTracks();
-            foreach (var trk in tracks)
+            double thresholdSq = 5000.0 * 5000.0;
+
+            Parallel.ForEach(tracks, trk =>
             {
-                if (trk.ExistenceProb < 0.20) continue;
-                if (string.IsNullOrEmpty(trk.FlightName))
+                if (trk.ExistenceProb < 0.20) return;
+                if (!string.IsNullOrEmpty(trk.FlightName)) return;
+
+                var point = new double[]
                 {
-                    double bestDist = double.MaxValue;
-                    TargetCT bestTgt = null;
-                    foreach (var t in Targets)
-                    {
-                        double dx = trk.Filter.State[0] - t.State[0];
-                        double dy = trk.Filter.State[1] - t.State[1];
-                        double dz = trk.Filter.State[2] - t.State[2];
-                        double dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-                        if (dist < bestDist)
-                        {
-                            bestDist = dist;
-                            bestTgt = t;
-                        }
-                    }
-                    if (bestTgt != null && bestDist < 5000)
-                        trk.FlightName = bestTgt.AircraftName;
+                    trk.Filter.State[0],
+                    trk.Filter.State[1],
+                    trk.Filter.State[2]
+                };
+
+                TargetCT nearest = null;
+                double bestDistSq = double.MaxValue;
+                KdTreeNode.Nearest(kdTree, point, ref nearest, ref bestDistSq);
+
+                if (nearest != null && bestDistSq < thresholdSq)
+                {
+                    trk.FlightName = nearest.AircraftName;
                 }
-            }
+            });
         }
 
         public double GetDt() => dt;
@@ -380,5 +387,67 @@ namespace RealRadarSim.Engine
         public List<Measurement> GetLastMeasurements() => lastMeasurements;
         public AdvancedRadar GetRadar() => Radar;
         public string GetRadarType() => Radar.RadarType;
+
+        // --- KD‑tree implementation for 3D nearest-neighbor search ---
+        private class KdTreeNode
+        {
+            public TargetCT Target;
+            public int Axis;
+            public KdTreeNode Left;
+            public KdTreeNode Right;
+
+            private KdTreeNode(TargetCT target, int axis)
+            {
+                Target = target;
+                Axis = axis;
+            }
+
+            public static KdTreeNode Build(List<TargetCT> targets, int depth)
+            {
+                if (targets == null || targets.Count == 0) return null;
+                int axis = depth % 3;
+                targets.Sort((a, b) =>
+                {
+                    double aCoord = a.State[axis];
+                    double bCoord = b.State[axis];
+                    return aCoord.CompareTo(bCoord);
+                });
+                int median = targets.Count / 2;
+                var node = new KdTreeNode(targets[median], axis);
+                var leftList = targets.GetRange(0, median);
+                var rightList = targets.GetRange(median + 1, targets.Count - median - 1);
+                node.Left = Build(leftList, depth + 1);
+                node.Right = Build(rightList, depth + 1);
+                return node;
+            }
+
+            public static void Nearest(KdTreeNode node, double[] point, ref TargetCT best, ref double bestDistSq)
+            {
+                if (node == null) return;
+
+                var coords = node.Target.State;
+                double dx = point[0] - coords[0];
+                double dy = point[1] - coords[1];
+                double dz = point[2] - coords[2];
+                double distSq = dx * dx + dy * dy + dz * dz;
+
+                if (distSq < bestDistSq)
+                {
+                    bestDistSq = distSq;
+                    best = node.Target;
+                }
+
+                int axis = node.Axis;
+                double diff = point[axis] - coords[axis];
+                var first = diff < 0 ? node.Left : node.Right;
+                var second = diff < 0 ? node.Right : node.Left;
+
+                Nearest(first, point, ref best, ref bestDistSq);
+                if (diff * diff < bestDistSq)
+                {
+                    Nearest(second, point, ref best, ref bestDistSq);
+                }
+            }
+        }
     }
 }

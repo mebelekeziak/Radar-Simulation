@@ -124,179 +124,158 @@ namespace RealRadarSim.Tracking
         /// <param name="dt">Time step since the last update (seconds).</param>
         public void UpdateTracks(List<Measurement> measurements, double dt)
         {
-            // 1) Prediction Step: advance each track’s filter.
-            foreach (var track in tracks)
+            // 1) Prediction Step
+            foreach (var trk in tracks)
             {
-                track.Filter.Predict(dt);
-                track.Age += dt;
+                trk.Filter.Predict(dt);
+                trk.Age += dt;
             }
 
-            // 2) Gating using a chi-square threshold computed from the gating probability.
-            // The threshold is further scaled by dynamic and existence factors.
-            List<List<int>> gateMatrix = new List<List<int>>();
-            for (int i = 0; i < tracks.Count; i++)
+            int nTracks = tracks.Count;
+            int nMeas = measurements.Count;
+
+            // --- prepare reusable containers ---
+            var gateMatrix = new List<List<int>>(nTracks);
+            var measToTracks = new Dictionary<int, List<int>>(nMeas);
+            var trackMeasLikelihood = new List<Dictionary<int, double>>(nTracks);
+            double[] measurementLikelihoodSum = new double[nMeas];
+            double[] beta0 = new double[nMeas];
+            var beta = new Dictionary<(int, int), double>();
+
+            // --- per‐track caches ---
+            var zPreds = new Vector<double>[nTracks];
+            var SInvs = new Matrix<double>[nTracks];
+            var normFactors = new double[nTracks];
+            var rangeGates = new double[nTracks];
+
+            // base chi‐square threshold
+            var chiSq = new ChiSquared(measurementDimension);
+            double baseGateTh = chiSq.InverseCumulativeDistribution(GatingProbability);
+
+            // 2) Precompute H(x), S⁻¹, normalization and a cheap range‐gate per track (parallel)
+            Parallel.For(0, nTracks, i =>
+            {
+                var trk = tracks[i];
+                var zPred = trk.Filter.H(trk.Filter.State);
+                zPreds[i] = zPred;
+
+                var S = trk.Filter.S();
+                SInvs[i] = S.Inverse();
+
+                double det = Math.Max(S.Determinant(), 1e-12);
+                normFactors[i] = 1.0
+                    / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * Math.Sqrt(det));
+
+                // range‐only pre‐gate threshold: sqrt(χ² ⋅ var_range)
+                rangeGates[i] = Math.Sqrt(baseGateTh * S[0, 0]);
+            });
+
+            // initialize gateMatrix
+            for (int i = 0; i < nTracks; i++)
                 gateMatrix.Add(new List<int>());
 
-            // Create a chi-squared distribution for the measurement dimension.
-            var chiSqDist = new ChiSquared(measurementDimension);
-            double baseGateThreshold = chiSqDist.InverseCumulativeDistribution(GatingProbability);
-
-            for (int i = 0; i < tracks.Count; i++)
+            // 3) Gating: cheap range‐gate + full Mahalanobis with cached S⁻¹ (parallel)
+            Parallel.For(0, nTracks, i =>
             {
-                var track = tracks[i];
-                // Adjust the threshold based on track dynamics.
-                double speed = track.Filter.State.SubVector(3, 3).L2Norm();
-                double dynamicFactor = 1.0 + 0.5 * (speed / 100.0);
-                double existenceFactor = (track.ExistenceProb > 0.7) ? 1.5 : 1.0;
-                double adaptiveThreshold = baseGateThreshold * dynamicFactor * existenceFactor;
-                // Clamp to a reasonable range.
-                adaptiveThreshold = Math.Max(5.0, Math.Min(adaptiveThreshold, 1e6));
+                var trk = tracks[i];
+                double speed = trk.Filter.State.SubVector(3, 3).L2Norm();
+                double dynFact = 1.0 + 0.5 * (speed / 100.0);
+                double existFact = trk.ExistenceProb > 0.7 ? 1.5 : 1.0;
+                double adaptTh = Math.Max(5.0,
+                                    Math.Min(baseGateTh * dynFact * existFact, 1e6));
 
-                // For each measurement, compute the Mahalanobis distance squared.
-                for (int m = 0; m < measurements.Count; m++)
+                for (int m = 0; m < nMeas; m++)
                 {
-                    double md2 = MahalanobisDistanceSq(track, measurements[m]);
-                    if (md2 < adaptiveThreshold)
-                        gateMatrix[i].Add(m);
+                    var meas = measurements[m];
+
+                    // 3.a) cheap range‐only pre‐gate
+                    if (Math.Abs(meas.Range - zPreds[i][0]) > rangeGates[i])
+                        continue;
+
+                    // 3.b) full Mahalanobis
+                    var zMeas = DenseVector.OfArray(new[] { meas.Range, meas.Azimuth, meas.Elevation });
+                    var y = zMeas - zPreds[i];
+                    y[1] = MathUtil.NormalizeAngle(y[1]);
+                    y[2] = MathUtil.NormalizeAngle(y[2]);
+
+                    double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
+                    if (d2 < adaptTh)
+                        lock (gateMatrix) { gateMatrix[i].Add(m); }
                 }
-            }
+            });
 
-            // 3) Build measurement-to-track associations.
-            Dictionary<int, List<int>> measToTracks = new Dictionary<int, List<int>>();
-            for (int m = 0; m < measurements.Count; m++)
+            // 4) Build measurement→track lists
+            for (int m = 0; m < nMeas; m++)
                 measToTracks[m] = new List<int>();
-
-            for (int i = 0; i < tracks.Count; i++)
-            {
+            for (int i = 0; i < nTracks; i++)
                 foreach (int m in gateMatrix[i])
                     measToTracks[m].Add(i);
-            }
 
-            // 4) Compute likelihoods L(i, m) for each track-measurement pair.
-            List<Dictionary<int, double>> trackMeasLikelihood = new List<Dictionary<int, double>>();
-            for (int i = 0; i < tracks.Count; i++)
+            // 5) Compute likelihoods using cached normFactors and SInvs (parallel)
+            for (int i = 0; i < nTracks; i++)
                 trackMeasLikelihood.Add(new Dictionary<int, double>());
-
-            for (int m = 0; m < measurements.Count; m++)
+            Parallel.For(0, nMeas, m =>
             {
-                var trackList = measToTracks[m];
-                if (trackList.Count == 0) continue;
-                Vector<double> z = ToVector(measurements[m]);
-                foreach (int i in trackList)
+                var trkList = measToTracks[m];
+                if (trkList.Count == 0) return;
+
+                var z = DenseVector.OfArray(new[] { measurements[m].Range,
+                                            measurements[m].Azimuth,
+                                            measurements[m].Elevation });
+                foreach (int i in trkList)
                 {
-                    double likelihood = ComputeMeasurementLikelihood(tracks[i], z);
-                    trackMeasLikelihood[i][m] = likelihood;
+                    var y = z - zPreds[i];
+                    y[1] = MathUtil.NormalizeAngle(y[1]);
+                    y[2] = MathUtil.NormalizeAngle(y[2]);
+
+                    double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
+                    double L = normFactors[i] * Math.Exp(-0.5 * d2);
+
+                    lock (trackMeasLikelihood[i])
+                        trackMeasLikelihood[i][m] = L;
                 }
+            });
+
+            // 6) Sum likelihoods over tracks
+            for (int m = 0; m < nMeas; m++)
+            {
+                double sum = 0.0;
+                for (int i = 0; i < nTracks; i++)
+                    if (trackMeasLikelihood[i].TryGetValue(m, out var L))
+                        sum += ProbDetection * L;
+                measurementLikelihoodSum[m] = sum;
             }
 
-            // 5) For each measurement, sum likelihoods over all gating tracks.
-            double[] measurementLikelihoodSum = new double[measurements.Count];
-            for (int m = 0; m < measurements.Count; m++)
-                measurementLikelihoodSum[m] = 0.0;
-            for (int i = 0; i < tracks.Count; i++)
+            // 7) Compute β₀ (false‐alarm) and β(i,m) (association probs)
+            for (int m = 0; m < nMeas; m++)
             {
-                foreach (var pair in trackMeasLikelihood[i])
+                double baseVol = (4.0 / 3.0) * Math.PI * Math.Pow(Math.Sqrt(baseGateTh), 3);
+                var trkList = measToTracks[m];
+                double avgSqrtDet = 1.0;
+                if (trkList.Count > 0)
                 {
-                    int m = pair.Key;
-                    measurementLikelihoodSum[m] += ProbDetection * pair.Value;
-                }
-            }
-
-            // 6) Compute association probabilities β and false–alarm probability β₀.
-            double[] beta0 = new double[measurements.Count];
-            Dictionary<(int, int), double> beta = new Dictionary<(int, int), double>();
-
-            for (int m = 0; m < measurements.Count; m++)
-            {
-                // Compute a base gating volume from the chi-square threshold.
-                // Using a spherical approximation:
-                double baseGatingVolume = (4.0 / 3.0) * Math.PI * Math.Pow(Math.Sqrt(baseGateThreshold), 3);
-
-                // If one or more tracks gated on this measurement, adjust the clutter likelihood
-                // using the average square root of the innovation covariance determinant.
-                double avgSqrtDetS = 1.0;  // Default value if no tracks gate on the measurement.
-                if (measToTracks[m].Count > 0)
-                {
-                    double sumSqrtDetS = 0.0;
-                    foreach (int i in measToTracks[m])
+                    double tot = 0.0;
+                    foreach (int i in trkList)
                     {
-                        Matrix<double> S = tracks[i].Filter.S();
-                        double detS = Math.Max(S.Determinant(), 1e-12);
-                        sumSqrtDetS += Math.Sqrt(detS);
+                        var S = tracks[i].Filter.S();
+                        double d = Math.Max(S.Determinant(), 1e-12);
+                        tot += Math.Sqrt(d);
                     }
-                    avgSqrtDetS = sumSqrtDetS / measToTracks[m].Count;
+                    avgSqrtDet = tot / trkList.Count;
                 }
 
-                // Compute the effective clutter likelihood for measurement m.
-                double clutterLikelihood = ClutterDensity * baseGatingVolume * avgSqrtDetS;
+                double clutterL = ClutterDensity * baseVol * avgSqrtDet;
+                double totalL = measurementLikelihoodSum[m] + clutterL;
+                if (totalL < 1e-12) totalL = 1e-12;
+                beta0[m] = clutterL / totalL;
 
-                // Total likelihood: sum of track likelihoods plus the clutter likelihood.
-                double totalLikelihood = measurementLikelihoodSum[m] + clutterLikelihood;
-                if (totalLikelihood < 1e-12)
-                    totalLikelihood = 1e-12;
-
-                // β₀ is the fraction of the likelihood attributed to clutter.
-                beta0[m] = clutterLikelihood / totalLikelihood;
-
-                // For each track gating measurement m, compute β(i, m).
-                foreach (int i in measToTracks[m])
-                {
-                    double associationProb = (ProbDetection * trackMeasLikelihood[i][m]) / totalLikelihood;
-                    beta[(i, m)] = associationProb;
-                }
+                foreach (int i in trkList)
+                    beta[(i, m)] = (ProbDetection * trackMeasLikelihood[i][m]) / totalL;
             }
 
-            // 7) Update each track with a weighted (effective) measurement.
-            for (int i = 0; i < tracks.Count; i++)
-            {
-                double sumBeta = 0.0;
-                Vector<double> zEff = DenseVector.Create(3, 0.0);
-                // Compute the weighted measurement mean.
-                foreach (int m in gateMatrix[i])
-                {
-                    double b = beta.ContainsKey((i, m)) ? beta[(i, m)] : 0.0;
-                    sumBeta += b;
-                    zEff += ToVector(measurements[m]) * b;
-                }
-                if (sumBeta > 1e-9)
-                {
-                    zEff /= sumBeta;
-                    // Compute the measurement scatter (covariance) from the gated measurements.
-                    Matrix<double> Pzz = DenseMatrix.Create(3, 3, 0.0);
-                    foreach (int m in gateMatrix[i])
-                    {
-                        double b = beta.ContainsKey((i, m)) ? beta[(i, m)] : 0.0;
-                        if (b < 1e-12) continue;
-                        Vector<double> diff = ToVector(measurements[m]) - zEff;
-                        diff[1] = MathUtil.NormalizeAngle(diff[1]);
-                        diff[2] = MathUtil.NormalizeAngle(diff[2]);
-                        Pzz += b * (diff.ToColumnMatrix() * diff.ToRowMatrix());
-                    }
-                    Pzz /= sumBeta;
-                    // Incorporate the intrinsic measurement noise from the filter.
-                    Matrix<double> R_meas = tracks[i].Filter.GetMeasurementNoiseCov();
-                    Matrix<double> S_jpda = Pzz + R_meas;
-                    tracks[i].Filter.Update(zEff, S_jpda);
-                    tracks[i].Age = 0;
-                    tracks[i].ExistenceProb = Math.Min(1.0, tracks[i].ExistenceProb + ExistenceIncreaseGain * sumBeta);
-                }
-                else
-                {
-                    // No valid measurement associated—decay the existence probability.
-                    tracks[i].ExistenceProb *= ExistenceDecayFactor;
-                }
-            }
-
-            // 8) Update candidate tracks from measurements not clearly associated with existing tracks.
             CreateOrUpdateCandidates(measurements, beta0);
-
-            // 9) Confirm candidate tracks (initiate new tracks).
             ConfirmCandidates();
-
-            // 10) Merge tracks that are close together using DBSCAN-based Gaussian fusion.
             MergeTracksDBSCAN();
-
-            // 11) Prune tracks that are too weak or too old.
             PruneTracks();
         }
 
