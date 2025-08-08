@@ -30,13 +30,14 @@
         {
             SuspendLayout();
             // 
-            // Form1
+            // RadarForm
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(800, 450);
-            Name = "Form1";
+            Name = "RadarForm";
             Text = "Form1";
+            Load += RadarForm_Load;
             ResumeLayout(false);
         }
 

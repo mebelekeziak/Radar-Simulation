@@ -463,5 +463,10 @@ namespace RealRadarSim.Forms
 
             g.DrawString(status, uiFont, textBrush, panelRect.Left + 12, panelRect.Top + 10);
         }
+
+        private void RadarForm_Load(object sender, EventArgs e)
+        {
+
+        }
     }
 }
