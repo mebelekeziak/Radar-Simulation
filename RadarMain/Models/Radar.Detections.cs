@@ -95,7 +95,17 @@ namespace RealRadarSim.Models
             double radialVel = 0.0;
             if (UseDopplerProcessing && tgt.State.Count >= 6)
             {
-                double vx = tgt.State[3], vy = tgt.State[4], vz = tgt.State[5];
+                // State = [x, y, z, speed, headingRad, climbRate]
+                double s = tgt.State[3];
+                double h = tgt.State[4];
+                double climb = tgt.State[5];
+
+                // Convert speed/heading/climb to Cartesian velocity components
+                double vx = s * Math.Cos(h);
+                double vy = s * Math.Sin(h);
+                double vz = climb;
+
+                // Project velocity onto line-of-sight vector to get radial velocity
                 radialVel = (x * vx + y * vy + z * vz) / (r + 1e-6) + Normal.Sample(rng, 0, VelocityNoiseStd);
             }
 
