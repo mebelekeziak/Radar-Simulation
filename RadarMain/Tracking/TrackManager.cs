@@ -4,6 +4,7 @@ using System.Linq;
 using MathNet.Numerics.Distributions;
 using MathNet.Numerics.LinearAlgebra;
 using MathNet.Numerics.LinearAlgebra.Double;
+using MathNet.Numerics.LinearAlgebra.Factorization;
 using RealRadarSim.Models;
 using RealRadarSim.Utils;
 
@@ -35,7 +36,7 @@ namespace RealRadarSim.Tracking
             var Ppos = trk.Filter.Covariance.SubMatrix(0, 3, 0, 3).Clone();
             for (int i = 0; i < 3; i++) Ppos[i, i] += 1e-6;  // stabilize
 
-            double d2 = (diff.ToRowMatrix() * Ppos.Inverse() * diff.ToColumnMatrix())[0, 0];
+            double d2 = MahalanobisSquared(diff, Ppos);
             return d2 < RescueGateChi2;
         }
 
@@ -99,7 +100,7 @@ namespace RealRadarSim.Tracking
                 Matrix<double> S = initCov.SubMatrix(0, 3, 0, 3)
                                    + trk.Filter.Covariance.SubMatrix(0, 3, 0, 3);
                 for (int k = 0; k < 3; ++k) S[k, k] += 1e-6;
-                double d2 = (d.ToRowMatrix() * S.Inverse() * d.ToColumnMatrix())[0, 0];
+                double d2 = MahalanobisSquared(d, S);
 
                 // b) compute the same dynamic & existence factors you use elsewhere
                 double speed = trk.Filter.State.SubVector(3, 3).L2Norm();
@@ -147,6 +148,15 @@ namespace RealRadarSim.Tracking
             var SInvs = new Matrix<double>[nTracks];
             var normFactors = new double[nTracks];
             var rangeGates = new double[nTracks];
+            var sqrtDets = new double[nTracks];
+
+            // --- precompute measurement vectors to avoid repeated boxing ---
+            var zMeasVecs = new Vector<double>[nMeas];
+            for (int m = 0; m < nMeas; m++)
+            {
+                var meas = measurements[m];
+                zMeasVecs[m] = DenseVector.OfArray(new[] { meas.Range, meas.Azimuth, meas.Elevation });
+            }
 
             // base chi‐square threshold
             var chiSq = new ChiSquared(measurementDimension);
@@ -160,11 +170,14 @@ namespace RealRadarSim.Tracking
                 zPreds[i] = zPred;
 
                 var S = trk.Filter.S();
-                SInvs[i] = S.Inverse();
-
-                double det = Math.Max(S.Determinant(), 1e-12);
-                normFactors[i] = 1.0
-                    / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * Math.Sqrt(det));
+                // Stable inversion via Cholesky
+                var chol = S.Cholesky();
+                SInvs[i] = chol.Solve(DenseMatrix.CreateIdentity(S.RowCount));
+                // sqrt(det(S)) from chol diag product
+                var R = chol.Factor;
+                double sqrtDet = 1.0; for (int k = 0; k < R.RowCount; k++) sqrtDet *= R[k, k];
+                sqrtDets[i] = Math.Max(sqrtDet, 1e-6);
+                normFactors[i] = 1.0 / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * sqrtDets[i]);
 
                 // range‐only pre‐gate threshold: sqrt(χ² ⋅ var_range)
                 rangeGates[i] = Math.Sqrt(baseGateTh * S[0, 0]);
@@ -193,14 +206,19 @@ namespace RealRadarSim.Tracking
                         continue;
 
                     // 3.b) full Mahalanobis
-                    var zMeas = DenseVector.OfArray(new[] { meas.Range, meas.Azimuth, meas.Elevation });
-                    var y = zMeas - zPreds[i];
+                    var y = zMeasVecs[m] - zPreds[i];
                     y[1] = MathUtil.NormalizeAngle(y[1]);
                     y[2] = MathUtil.NormalizeAngle(y[2]);
 
                     double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
-                    if (d2 < adaptTh)
-                        lock (gateMatrix) { gateMatrix[i].Add(m); }
+
+                    // SNR-adaptive gating: tighten threshold for strong detections
+                    double snrLin = Math.Max(0.0, Math.Pow(10.0, meas.SNR_dB / 10.0));
+                    double snrGateFactor = 1.0 / (1.0 + 0.3 * snrLin); // in (0,1] as SNR grows
+                    double adaptThSNR = Math.Max(2.0, adaptTh * Math.Clamp(snrGateFactor, 0.2, 1.0));
+
+                    if (d2 < adaptThSNR)
+                        gateMatrix[i].Add(m);
                 }
             });
 
@@ -219,9 +237,7 @@ namespace RealRadarSim.Tracking
                 var trkList = measToTracks[m];
                 if (trkList.Count == 0) return;
 
-                var z = DenseVector.OfArray(new[] { measurements[m].Range,
-                                            measurements[m].Azimuth,
-                                            measurements[m].Elevation });
+                var z = zMeasVecs[m];
                 foreach (int i in trkList)
                 {
                     var y = z - zPreds[i];
@@ -230,6 +246,10 @@ namespace RealRadarSim.Tracking
 
                     double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
                     double L = normFactors[i] * Math.Exp(-0.5 * d2);
+                    // Slightly emphasize high-SNR measurements in association
+                    double snrLin = Math.Max(0.0, Math.Pow(10.0, measurements[m].SNR_dB / 10.0));
+                    double confBoost = Math.Clamp(Math.Sqrt(1.0 + snrLin), 1.0, 4.0);
+                    L *= confBoost;
 
                     lock (trackMeasLikelihood[i])
                         trackMeasLikelihood[i][m] = L;
@@ -256,11 +276,7 @@ namespace RealRadarSim.Tracking
                 {
                     double tot = 0.0;
                     foreach (int i in trkList)
-                    {
-                        var S = tracks[i].Filter.S();
-                        double d = Math.Max(S.Determinant(), 1e-12);
-                        tot += Math.Sqrt(d);
-                    }
+                        tot += sqrtDets[i];
                     avgSqrtDet = tot / trkList.Count;
                 }
 
@@ -398,10 +414,10 @@ namespace RealRadarSim.Tracking
                 double euclidSq = d.DotProduct(d);
                 if (euclidSq > guardSq) continue;                 // quick reject
 
-                // Mahalanobis test (same as before)
+                // Mahalanobis test using a Cholesky solve (avoids explicit inverse)
                 Matrix<double> S = posCov[index] + posCov[j];
                 for (int k = 0; k < 3; ++k) S[k, k] += 1e-6;
-                double d2 = (d.ToRowMatrix() * S.Inverse() * d.ToColumnMatrix())[0, 0];
+                double d2 = MahalanobisSquared(d, S);
 
                 if (d2 <= epsMahalanobisSq)
                     neighbours.Add(j);
@@ -464,8 +480,11 @@ namespace RealRadarSim.Tracking
 
             foreach (var trk in cluster)
             {
-                Matrix<double> PInv = trk.Filter.Covariance.Inverse();
+                // Use Cholesky factorization for a stable inverse
+                var chol = trk.Filter.Covariance.Cholesky();
+                Matrix<double> PInv = chol.Solve(DenseMatrix.CreateIdentity(9));
                 Omega += PInv;
+                // P^{-1} x can be obtained without forming P^{-1}, but we already have PInv here
                 xi += PInv * trk.Filter.State;
                 if (trk.ExistenceProb > maxExistProb)
                     maxExistProb = trk.ExistenceProb;
@@ -487,6 +506,17 @@ namespace RealRadarSim.Tracking
         #region Helper Methods
 
         /// <summary>
+        /// Computes d^T S^{-1} d using a Cholesky solve for numerical stability.
+        /// </summary>
+        private static double MahalanobisSquared(Vector<double> d, Matrix<double> S)
+        {
+            var chol = S.Cholesky();
+            // Solve S x = d
+            Vector<double> x = chol.Solve(d);
+            return d.DotProduct(x);
+        }
+
+        /// <summary>
         /// Computes the Mahalanobis distance squared between the predicted measurement and the actual measurement.
         /// </summary>
         private double MahalanobisDistanceSq(JPDA_Track track, Measurement m)
@@ -497,9 +527,9 @@ namespace RealRadarSim.Tracking
             y[1] = MathUtil.NormalizeAngle(y[1]);
             y[2] = MathUtil.NormalizeAngle(y[2]);
             Matrix<double> S = track.Filter.S();
-            Matrix<double> SInv = S.Inverse();
-            double dist2 = (y.ToRowMatrix() * SInv * y.ToColumnMatrix())[0, 0];
-            return dist2;
+            // tiny jitter for stability
+            for (int i = 0; i < S.RowCount; i++) S[i, i] += 1e-9;
+            return MahalanobisSquared(y, S);
         }
 
         /// <summary>
@@ -513,11 +543,13 @@ namespace RealRadarSim.Tracking
             y[2] = MathUtil.NormalizeAngle(y[2]);
 
             Matrix<double> S = track.Filter.S();
-            double det = S.Determinant();
-            if (det < 1e-12) det = 1e-12;
-            Matrix<double> SInv = S.Inverse();
-            double dist2 = (y.ToRowMatrix() * SInv * y.ToColumnMatrix())[0, 0];
-            double normFactor = 1.0 / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * Math.Sqrt(det));
+            for (int i = 0; i < S.RowCount; i++) S[i, i] += 1e-9;
+            var chol = S.Cholesky();
+            // sqrt(det(S)) is product of Cholesky diagonal
+            var R = chol.Factor;
+            double sqrtDet = 1.0; for (int i = 0; i < R.RowCount; i++) sqrtDet *= R[i, i];
+            double dist2 = MahalanobisSquared(y, S);
+            double normFactor = 1.0 / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * Math.Max(sqrtDet, 1e-6));
             double likelihood = normFactor * Math.Exp(-0.5 * dist2);
             return likelihood;
         }
@@ -627,8 +659,15 @@ namespace RealRadarSim.Tracking
                     // Convert into the 3‑D spherical vector expected by the EKF
                     Vector<double> z = ToVector(m);
 
-                    // Plain EKF update (uses the filter’s own R)
-                    trk.Filter.Update(z);
+                    // Adaptive R based on measurement SNR (higher SNR → lower noise)
+                    Matrix<double> baseR = trk.Filter.GetMeasurementNoiseCov().Clone();
+                    double snrLin = Math.Max(1e-6, Math.Pow(10.0, m.SNR_dB / 10.0));
+                    double scale = 1.0 / Math.Sqrt(1.0 + snrLin);
+                    baseR[0, 0] *= scale;
+                    baseR[1, 1] *= scale;
+                    baseR[2, 2] *= scale;
+
+                    trk.Filter.Update(z, baseR);
 
                     // House‑keeping
                     trk.Age = 0;

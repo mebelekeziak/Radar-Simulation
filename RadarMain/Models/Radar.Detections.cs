@@ -79,10 +79,15 @@ namespace RealRadarSim.Models
             if (UseAesaMode) snr_dB += 3.0;
             if (snr_dB < requiredSNR_dB) return null;
 
-            double rMeas = r + Normal.Sample(rng, 0, rangeNoiseBase);
+            // Measurement noise scales with SNR: higher SNR → lower sigma.
+            double snrLinForNoise = Math.Max(1e-6, Math.Pow(10.0, snr_dB / 10.0));
+            double rangeSigma = rangeNoiseBase / Math.Sqrt(snrLinForNoise);
+            double angleSigma = angleNoiseBase / Math.Sqrt(snrLinForNoise);
+
+            double rMeas = r + Normal.Sample(rng, 0, rangeSigma);
             rMeas = Math.Max(1.0, rMeas);
-            double azMeas = az + Normal.Sample(rng, 0, angleNoiseBase);
-            double elMeas = el + Normal.Sample(rng, 0, angleNoiseBase);
+            double azMeas = az + Normal.Sample(rng, 0, angleSigma);
+            double elMeas = el + Normal.Sample(rng, 0, angleSigma);
 
             double snrLin = Math.Pow(10, snr_dB / 10.0) * (nominalBW / effBW);
             double amp = snrLin + Normal.Sample(rng, 0, 0.05 * snrLin);
@@ -100,7 +105,8 @@ namespace RealRadarSim.Models
                 Azimuth = MathUtil.NormalizeAngle(azMeas),
                 Elevation = MathUtil.NormalizeAngle(elMeas),
                 Amplitude = amp,
-                RadialVelocity = radialVel
+                RadialVelocity = radialVel,
+                SNR_dB = snr_dB
             };
         }
 
@@ -121,9 +127,10 @@ namespace RealRadarSim.Models
             double elMeas = MathUtil.NormalizeAngle(elFA + Normal.Sample(rng, 0, angleNoiseBase));
             double baseAmp = Math.Pow(10.0, requiredSNR_dB / 10.0);
             double amp = Math.Max(0.8 * baseAmp, baseAmp + Normal.Sample(rng, 0, 0.2 * baseAmp));
+            double snr_dB = requiredSNR_dB + Normal.Sample(rng, 0, 2.0);
             double vel = UseDopplerProcessing ? Normal.Sample(rng, 0, 100.0) : 0.0;
 
-            return new Measurement { Range = rMeas, Azimuth = azMeas, Elevation = elMeas, Amplitude = amp, RadialVelocity = vel };
+            return new Measurement { Range = rMeas, Azimuth = azMeas, Elevation = elMeas, Amplitude = amp, RadialVelocity = vel, SNR_dB = snr_dB };
         }
 
         // —————————————————————————  CFAR & clustering (deterministic)  —————————————————————————

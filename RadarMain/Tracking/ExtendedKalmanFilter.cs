@@ -138,10 +138,11 @@ namespace RealRadarSim.Tracking
                 double reg = 1e-2; // Regularization for numerical stability.
                 S_mat += DenseMatrix.CreateIdentity(S_mat.RowCount) * reg;
 
-                // 4. Compute Kalman gain.
+                // 4. Compute Kalman gain without forming S^{-1} explicitly
                 var cholS = S_mat.Cholesky();
-                Matrix<double> Sinv = cholS.Solve(DenseMatrix.CreateIdentity(S_mat.RowCount));
-                K = Covariance * Hjac.Transpose() * Sinv;
+                Matrix<double> PHt = Covariance * Hjac.Transpose();
+                // Solve S * X = PHt  =>  K = X
+                K = cholS.Solve(PHt);
 
                 // 5. Update state.
                 Vector<double> stateUpdate = K * y;
@@ -165,8 +166,9 @@ namespace RealRadarSim.Tracking
             double regFinal = 1e-2;
             S_mat_final += DenseMatrix.CreateIdentity(S_mat_final.RowCount) * regFinal;
             var cholFinal = S_mat_final.Cholesky();
-            Matrix<double> SinvFinal = cholFinal.Solve(DenseMatrix.CreateIdentity(S_mat_final.RowCount));
-            double md2 = (finalY.ToRowMatrix() * SinvFinal * finalY.ToColumnMatrix())[0, 0];
+            // Solve S x = y, then y^T x
+            var x_md = cholFinal.Solve(finalY);
+            double md2 = finalY.DotProduct(x_md);
 
             // More aggressive adaptation for maneuvering targets.
             if (md2 > 9.0)
@@ -176,8 +178,11 @@ namespace RealRadarSim.Tracking
 
             // --- Covariance Update ---
             var I = DenseMatrix.CreateIdentity(9);
-            Matrix<double> KH = K * HjacFinal;
-            Covariance = (I - KH) * Covariance * (I - KH).Transpose() + K * customMeasurementCov * K.Transpose();
+            // Recompute gain at the final linearization
+            Matrix<double> PHt_final = Covariance * HjacFinal.Transpose();
+            Matrix<double> K_final = cholFinal.Solve(PHt_final);
+            Matrix<double> KH = K_final * HjacFinal;
+            Covariance = (I - KH) * Covariance * (I - KH).Transpose() + K_final * customMeasurementCov * K_final.Transpose();
             Covariance = 0.5 * (Covariance + Covariance.Transpose());
 
             // Enforce a minimum variance on the diagonal.
