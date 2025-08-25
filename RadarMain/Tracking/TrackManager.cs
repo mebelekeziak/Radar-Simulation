@@ -289,6 +289,47 @@ namespace RealRadarSim.Tracking
                     beta[(i, m)] = (ProbDetection * trackMeasLikelihood[i][m]) / totalL;
             }
 
+            // 8) Apply JPDA update per track using association probabilities
+            for (int i = 0; i < nTracks; i++)
+            {
+                double wsum = 0.0;
+                int bestM = -1;
+                double bestW = -1.0;
+                foreach (int m in gateMatrix[i])
+                {
+                    if (beta.TryGetValue((i, m), out var w))
+                    {
+                        wsum += w;
+                        if (w > bestW)
+                        {
+                            bestW = w;
+                            bestM = m;
+                        }
+                    }
+                }
+
+                if (wsum > 1e-6 && bestM >= 0)
+                {
+                    var trk = tracks[i];
+                    var z = zMeasVecs[bestM];
+                    var baseR = trk.Filter.GetMeasurementNoiseCov().Clone();
+                    double snrLin = Math.Max(1e-6, Math.Pow(10.0, measurements[bestM].SNR_dB / 10.0));
+                    double scale = 1.0 / Math.Sqrt(1.0 + snrLin);
+                    baseR[0, 0] *= scale;
+                    baseR[1, 1] *= scale;
+                    baseR[2, 2] *= scale;
+
+                    trk.Filter.Update(z, baseR);
+                    trk.Age = 0;
+                    double incr = Math.Clamp(wsum, 0.1, 1.0) * ExistenceIncreaseGain;
+                    trk.ExistenceProb = Math.Min(1.0, trk.ExistenceProb + incr);
+                }
+                else
+                {
+                    tracks[i].ExistenceProb *= ExistenceDecayFactor;
+                }
+            }
+
             CreateOrUpdateCandidates(measurements, beta0);
             ConfirmCandidates();
             MergeTracksDBSCAN();

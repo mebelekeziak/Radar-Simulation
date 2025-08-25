@@ -141,8 +141,10 @@ namespace RealRadarSim.Tracking
                 // 4. Compute Kalman gain without forming S^{-1} explicitly
                 var cholS = S_mat.Cholesky();
                 Matrix<double> PHt = Covariance * Hjac.Transpose();
-                // Solve S * X = PHt  =>  K = X
-                K = cholS.Solve(PHt);
+                // Compute K = P H^T S^{-1} using a right-side solve via transpose
+                // Solve S * X^T = (PHt)^T, then K = (X^T)^T = X
+                Matrix<double> Xt = cholS.Solve(PHt.Transpose()); // 3x9
+                K = Xt.Transpose();                               // 9x3
 
                 // 5. Update state.
                 Vector<double> stateUpdate = K * y;
@@ -180,7 +182,9 @@ namespace RealRadarSim.Tracking
             var I = DenseMatrix.CreateIdentity(9);
             // Recompute gain at the final linearization
             Matrix<double> PHt_final = Covariance * HjacFinal.Transpose();
-            Matrix<double> K_final = cholFinal.Solve(PHt_final);
+            // As above, compute K_final = P H^T S^{-1} via right-side solve
+            Matrix<double> Xt_final = cholFinal.Solve(PHt_final.Transpose()); // 3x9
+            Matrix<double> K_final = Xt_final.Transpose();                    // 9x3
             Matrix<double> KH = K_final * HjacFinal;
             Covariance = (I - KH) * Covariance * (I - KH).Transpose() + K_final * customMeasurementCov * K_final.Transpose();
             Covariance = 0.5 * (Covariance + Covariance.Transpose());
