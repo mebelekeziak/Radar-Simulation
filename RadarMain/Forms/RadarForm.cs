@@ -433,10 +433,13 @@ namespace RealRadarSim.Forms
                 {
                     foreach (var m in rawMeas)
                     {
+                        // Convert polar (range, azimuth) to world XY (meters)
                         double mx = m.Range * Math.Cos(m.Azimuth);
                         double my = m.Range * Math.Sin(m.Azimuth);
-                        int ix = (int)(mx * scale + cx + panX);
-                        int iy = (int)(my * scale + cy + panY);
+                        // Apply the same world->screen mapping as the main scene:
+                        // screen = center + pan + zoom * (meters * scale)
+                        int ix = (int)(cx + panX + zoomFactor * (mx * scale));
+                        int iy = (int)(cy + panY + zoomFactor * (my * scale));
                         g.DrawEllipse(mp, ix - 4, iy - 4, 8, 8);
                     }
                 }
