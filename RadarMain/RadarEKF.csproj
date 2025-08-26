@@ -12,8 +12,6 @@
 
   <ItemGroup>
     <None Remove="Assets\Fonts\RobotoCondensed.ttf" />
-    <None Remove="Assets\Images\plane.png" />
-    <None Remove="Assets\plane.png" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,7 +22,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\Fonts\RobotoCondensed.ttf" />
-    <EmbeddedResource Include="Assets\Images\plane.png" />
   </ItemGroup>
 
   <ItemGroup>
