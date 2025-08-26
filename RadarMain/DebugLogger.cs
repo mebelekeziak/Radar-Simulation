@@ -16,6 +16,8 @@ namespace RealRadarSim.Logging
     {
         // --- Configuration Settings ---
         private static readonly string logFilePath = "debug.txt";
+        // Disable file logging by default to avoid generating files in build output.
+        public static bool EnableFileLogging { get; set; } = false;
         private const int MaxMessagesInMemory = 100;          // In‑memory buffer size.
         private const long MaxLogFileSizeBytes = 5 * 1024 * 1024; // 5 MB log file rotation.
         private static readonly TimeSpan GroupInterval = TimeSpan.FromMilliseconds(500);
@@ -153,17 +155,20 @@ namespace RealRadarSim.Logging
                 {
                     try
                     {
-                        // Rotate the log file if it exceeds the maximum size.
-                        if (File.Exists(logFilePath))
+                        if (EnableFileLogging)
                         {
-                            var info = new FileInfo(logFilePath);
-                            if (info.Length > MaxLogFileSizeBytes)
+                            // Rotate the log file if it exceeds the maximum size.
+                            if (File.Exists(logFilePath))
                             {
-                                string archivePath = $"{Path.GetFileNameWithoutExtension(logFilePath)}_{DateTime.Now:yyyyMMdd_HHmmss}{Path.GetExtension(logFilePath)}";
-                                File.Move(logFilePath, archivePath);
+                                var info = new FileInfo(logFilePath);
+                                if (info.Length > MaxLogFileSizeBytes)
+                                {
+                                    string archivePath = $"{Path.GetFileNameWithoutExtension(logFilePath)}_{DateTime.Now:yyyyMMdd_HHmmss}{Path.GetExtension(logFilePath)}";
+                                    File.Move(logFilePath, archivePath);
+                                }
                             }
+                            File.AppendAllText(logFilePath, logLine + Environment.NewLine);
                         }
-                        File.AppendAllText(logFilePath, logLine + Environment.NewLine);
                     }
                     catch (Exception ex)
                     {

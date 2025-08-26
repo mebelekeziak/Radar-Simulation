@@ -73,7 +73,7 @@ namespace RealRadarSim.Engine
                 }
                 catch (Exception ex)
                 {
-                    File.WriteAllText("lua_error.txt", $"Error loading config.lua: {ex.Message}");
+                    RealRadarSim.Logging.DebugLogger.Log("Lua", $"Error loading config.lua: {ex.Message}");
                     InitializeDefaultConfiguration();
                 }
             }
@@ -194,7 +194,7 @@ namespace RealRadarSim.Engine
                                    $"FrequencyHz: {FrequencyHz}\n" +
                                    $"TxPower_dBm: {TxPower_dBm}\n" +
                                    $"AntennaGain_dBi: {AntennaGain_dBi}\n";
-                File.AppendAllText("lua_error.txt", debugText);
+                RealRadarSim.Logging.DebugLogger.Log("Lua", debugText);
 
                 Radar.ShowAzimuthBars = showAzimuthBars;
                 Radar.ShowElevationBars = showElevationBars;

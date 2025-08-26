@@ -3,6 +3,7 @@ using System.IO;
 using MoonSharp.Interpreter;
 using MoonSharp.Interpreter.Loaders;
 using RealRadarSim.Utils;
+using RealRadarSim.Logging;
 
 namespace RealRadarSim.Config
 {
@@ -39,7 +40,7 @@ namespace RealRadarSim.Config
             }
             catch (Exception ex)
             {
-                File.WriteAllText("lua_error.txt", $"Error loading {path}: {ex.Message}");
+                DebugLogger.Log("Lua", $"Error loading {path}: {ex.Message}");
             }
             return RadarConfig.Default;
         }
