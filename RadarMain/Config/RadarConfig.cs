@@ -31,6 +31,7 @@ namespace RealRadarSim.Config
 
         // Platform / antenna
         public string RadarType { get; init; } = "ground";
+        public string AntennaPattern { get; init; } = "gaussian"; // gaussian | sinc2
         public int AntennaElevationBars { get; init; } = 1;
         public double AntennaAzimuthScan { get; init; } = 140.0;
         public double TiltOffsetDeg { get; init; } = 0.0;

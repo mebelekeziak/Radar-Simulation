@@ -69,6 +69,7 @@ namespace RealRadarSim.Config
                 CfarThresholdMultiplier = N("cfarThresholdMultiplier", 8.0),
                 ClusterDistanceMeters = N("clusterDistanceMeters", 600),
                 RadarType = tbl.Get("radarType").CastToString() ?? "ground",
+                AntennaPattern = (tbl.Get("antennaPattern").CastToString() ?? "gaussian").ToLower(),
                 AntennaElevationBars = (int)N("antennaElevationBars", 1),
                 AntennaAzimuthScan = N("antennaAzimuthScan", 140),
                 TiltOffsetDeg = N("tiltOffsetDeg", 0.0),

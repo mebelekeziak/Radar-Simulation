@@ -107,6 +107,9 @@ namespace RealRadarSim.Engine
                 string radarType = radarTable.Get("radarType").Type == DataType.String
                     ? radarTable.Get("radarType").String
                     : "ground";
+                string antennaPattern = radarTable.Get("antennaPattern").Type == DataType.String
+                    ? radarTable.Get("antennaPattern").String.ToLower()
+                    : "gaussian";
 
                 double antennaHeight = GetNumberOrDefault(radarTable, "antennaHeight", 0.0);
                 bool showAzimuthBars = GetBoolOrDefault(radarTable, "showAzimuthBars", false);
@@ -176,6 +179,7 @@ namespace RealRadarSim.Engine
 
                 Radar.ShowAzimuthBars = showAzimuthBars;
                 Radar.ShowElevationBars = showElevationBars;
+                Radar.AntennaPattern = antennaPattern;
 
                 if (radarType.ToLower() == "aircraft")
                 {

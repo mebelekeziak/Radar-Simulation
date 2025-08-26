@@ -88,6 +88,41 @@ namespace RealRadarSim.Models
         public double AtmosphericLossOneWay_dB { get; set; } = 1.0;
         public double WeatherLossOneWay_dB { get; set; } = 0.5;
 
+        // Off-boresight gain model: fixed angular beamwidth with Gaussian roll-off.
+        // The Gaussian is parameterized so that BeamWidthRad is the -3 dB full width (FWHM).
+        public string AntennaPattern { get; set; } = "gaussian"; // "gaussian" or "sinc2"
+
+        private static double Sinc(double x)
+        {
+            if (Math.Abs(x) < 1e-8) return 1.0;
+            return Math.Sin(x) / x;
+        }
+
+        private double OffBoresightGain(double thetaRad)
+        {
+            if (thetaRad <= 0) return 1.0;
+            double bw = Math.Max(1e-6, BeamWidthRad);
+            string pat = AntennaPattern?.ToLower() ?? "gaussian";
+            if (pat == "sinc2" || pat == "sinc^2" || pat == "sinc")
+            {
+                // G(theta) = sinc(k * theta)^2; choose k so that G(BW/2) = 0.5
+                // Solve sinc(u_hp) = 1/sqrt(2) → u_hp ≈ 1.39156 rad
+                const double u_hp = 1.39156;
+                double k = 2.0 * u_hp / bw;
+                double u = k * thetaRad;
+                double s = Sinc(u);
+                double g = s * s;
+                return Math.Clamp(g, 0.0, 1.0);
+            }
+            else
+            {
+                // Gaussian: G(theta) = exp(-4 ln(2) * (theta / BW)^2), so G(BW/2) = 0.5
+                double x = thetaRad / bw;
+                double g = Math.Exp(-4.0 * Math.Log(2.0) * x * x);
+                return Math.Clamp(g, 0.0, 1.0);
+            }
+        }
+
         // ——————————————————————————————  AESA Beam placeholder class  ——————————————————
         public class AesaBeam
         {

@@ -38,45 +38,54 @@ namespace RealRadarSim.Models
             double az = Math.Atan2(y, x);
             double el = Math.Atan2(z, Math.Sqrt(x * x + y * y));
 
-            double nominalBW = BeamWidthRad;
-            double effBW = nominalBW;
-            const double maxEffBW = 30 * Math.PI / 180;
-            if (r < referenceRange)
-            {
-                effBW = nominalBW * (referenceRange / r);
-                if (effBW > maxEffBW) effBW = maxEffBW;
-            }
-
+            // Fixed beamwidth; compute off-boresight angle relative to boresight
+            // and use it to attenuate SNR via a gain pattern (Gaussian).
+            // Geometric beam gate remains fixed and no longer widens at close range.
+            double fixedBW = BeamWidthRad;
             bool insideBeam;
+            double thetaOff = double.PositiveInfinity;
             if (RadarType == "aircraft")
             {
                 if (UseAesaMode)
                 {
-                    insideBeam = AesaBeams?.Any(b =>
+                    insideBeam = false;
+                    if (AesaBeams != null && AesaBeams.Count > 0)
                     {
-                        double dAz = Math.Abs(MathUtil.NormalizeAngle(az - b.CurrentAzimuth));
-                        if (dAz > effBW * 0.5) return false;
-                        double dEl = Math.Abs(MathUtil.NormalizeAngle(el - b.CurrentElevation));
-                        return dEl <= effBW; // wider vertical coverage in AESA
-                    }) ?? false;
+                        foreach (var b in AesaBeams)
+                        {
+                            double dAz = Math.Abs(MathUtil.NormalizeAngle(az - b.CurrentAzimuth));
+                            if (dAz > fixedBW * 0.5) continue;
+                            double dEl = Math.Abs(MathUtil.NormalizeAngle(el - b.CurrentElevation));
+                            if (dEl > fixedBW) continue; // wider vertical coverage in AESA
+                            insideBeam = true;
+                            double t = Math.Sqrt(dAz * dAz + dEl * dEl);
+                            if (t < thetaOff) thetaOff = t;
+                        }
+                    }
                 }
                 else
                 {
                     double dAz = Math.Abs(MathUtil.NormalizeAngle(az - CurrentAzimuth));
-                    if (dAz > effBW * 0.5) return null;
+                    if (dAz > fixedBW * 0.5) return null;
                     const double barHalfRad = Math.PI / 180; // 2° bar → 1° half‑width
                     double dEl = Math.Abs(MathUtil.NormalizeAngle(el - CurrentElevation));
                     insideBeam = dEl <= barHalfRad;
+                    thetaOff = Math.Sqrt(dAz * dAz + dEl * dEl);
                 }
             }
             else // ground radar
             {
-                insideBeam = Math.Abs(MathUtil.NormalizeAngle(az - CurrentBeamAngle)) <= effBW * 0.5;
+                double dAz = Math.Abs(MathUtil.NormalizeAngle(az - CurrentBeamAngle));
+                insideBeam = dAz <= fixedBW * 0.5;
+                thetaOff = dAz;
             }
             if (!insideBeam) return null;
 
             double snr_dB = ComputeAdvancedRadarEquationSNR(tgt.RCS, r);
             if (UseAesaMode) snr_dB += 3.0;
+            // Apply off-boresight gain attenuation to SNR (in dB)
+            double gainLin = OffBoresightGain(Math.Max(0.0, thetaOff));
+            snr_dB += 10.0 * Math.Log10(Math.Max(gainLin, 1e-6));
             if (snr_dB < requiredSNR_dB) return null;
 
             // Measurement noise scales with SNR: higher SNR → lower sigma.
@@ -89,7 +98,7 @@ namespace RealRadarSim.Models
             double azMeas = az + Normal.Sample(rng, 0, angleSigma);
             double elMeas = el + Normal.Sample(rng, 0, angleSigma);
 
-            double snrLin = Math.Pow(10, snr_dB / 10.0) * (nominalBW / effBW);
+            double snrLin = Math.Pow(10, snr_dB / 10.0);
             double amp = snrLin + Normal.Sample(rng, 0, 0.05 * snrLin);
 
             double radialVel = 0.0;
