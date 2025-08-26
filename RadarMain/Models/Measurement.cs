@@ -1,6 +1,5 @@
-﻿namespace RealRadarSim.Models
+namespace RealRadarSim.Models
 {
-    /// very funny variables
     public class Measurement
     {
         public double Range;
