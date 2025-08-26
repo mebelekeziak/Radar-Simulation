@@ -1,6 +1,7 @@
 ﻿using System;
 using MathNet.Numerics.LinearAlgebra;
 using MathNet.Numerics.LinearAlgebra.Double;
+using MathNet.Numerics.LinearAlgebra.Factorization;
 using RealRadarSim.Utils;
 
 namespace RealRadarSim.Tracking
@@ -44,6 +45,47 @@ namespace RealRadarSim.Tracking
                 { 0,          0.1 * 0.1,         0 },
                 { 0,               0,       0.1 * 0.1 }
             });
+        }
+
+        // ---------------------------------------------------------------------
+        //  Internal helpers for robust linear algebra (SPD solve with fallback)
+        // ---------------------------------------------------------------------
+        private static Matrix<double> SolveSymmetric(Matrix<double> A, Matrix<double> B)
+        {
+            try
+            {
+                var chol = A.Cholesky();
+                return chol.Solve(B);
+            }
+            catch
+            {
+                var pinv = PseudoInverse(A);
+                return pinv * B;
+            }
+        }
+
+        private static Vector<double> SolveSymmetric(Matrix<double> A, Vector<double> b)
+        {
+            try
+            {
+                var chol = A.Cholesky();
+                return chol.Solve(b);
+            }
+            catch
+            {
+                var pinv = PseudoInverse(A);
+                return pinv * b;
+            }
+        }
+
+        private static Matrix<double> PseudoInverse(Matrix<double> A, double tol = 1e-10)
+        {
+            var svd = A.Svd(true);
+            var s = svd.S;
+            int r = s.Count;
+            var invS = DenseMatrix.CreateDiagonal(r, r, i => s[i] > tol ? 1.0 / s[i] : 0.0);
+            // A = U * S * V^T → A^+ = V * S^+ * U^T
+            return svd.VT.Transpose() * invS * svd.U.Transpose();
         }
 
         /// <summary>
@@ -134,17 +176,14 @@ namespace RealRadarSim.Tracking
                 Matrix<double> Hjac = Jacobian(State);
 
                 // 3. Compute innovation covariance with added regularization.
-                Matrix<double> S_mat = Hjac * Covariance * Hjac.Transpose() + customMeasurementCov;
-                double reg = 1e-2; // Regularization for numerical stability.
-                S_mat += DenseMatrix.CreateIdentity(S_mat.RowCount) * reg;
+            Matrix<double> S_mat = Hjac * Covariance * Hjac.Transpose() + customMeasurementCov;
+            double reg = 1e-2; // Regularization for numerical stability.
+            S_mat = S_mat + DenseMatrix.CreateIdentity(S_mat.RowCount) * reg;
 
-                // 4. Compute Kalman gain without forming S^{-1} explicitly
-                var cholS = S_mat.Cholesky();
-                Matrix<double> PHt = Covariance * Hjac.Transpose();
-                // Compute K = P H^T S^{-1} using a right-side solve via transpose
-                // Solve S * X^T = (PHt)^T, then K = (X^T)^T = X
-                Matrix<double> Xt = cholS.Solve(PHt.Transpose()); // 3x9
-                K = Xt.Transpose();                               // 9x3
+            // 4. Compute Kalman gain without forming S^{-1} explicitly (robust solve)
+            Matrix<double> PHt = Covariance * Hjac.Transpose();
+            Matrix<double> Xt = SolveSymmetric(S_mat, PHt.Transpose()); // (m x n)
+            K = Xt.Transpose();                                         // (n x m)
 
                 // 5. Update state.
                 Vector<double> stateUpdate = K * y;
@@ -166,10 +205,9 @@ namespace RealRadarSim.Tracking
             Matrix<double> HjacFinal = Jacobian(State);
             Matrix<double> S_mat_final = HjacFinal * Covariance * HjacFinal.Transpose() + customMeasurementCov;
             double regFinal = 1e-2;
-            S_mat_final += DenseMatrix.CreateIdentity(S_mat_final.RowCount) * regFinal;
-            var cholFinal = S_mat_final.Cholesky();
-            // Solve S x = y, then y^T x
-            var x_md = cholFinal.Solve(finalY);
+            S_mat_final = S_mat_final + DenseMatrix.CreateIdentity(S_mat_final.RowCount) * regFinal;
+            // Solve S x = y, then y^T x (robust)
+            var x_md = SolveSymmetric(S_mat_final, finalY);
             double md2 = finalY.DotProduct(x_md);
 
             // More aggressive adaptation for maneuvering targets.
@@ -180,11 +218,10 @@ namespace RealRadarSim.Tracking
 
             // --- Covariance Update ---
             var I = DenseMatrix.CreateIdentity(9);
-            // Recompute gain at the final linearization
+            // Recompute gain at the final linearization (robust solve)
             Matrix<double> PHt_final = Covariance * HjacFinal.Transpose();
-            // As above, compute K_final = P H^T S^{-1} via right-side solve
-            Matrix<double> Xt_final = cholFinal.Solve(PHt_final.Transpose()); // 3x9
-            Matrix<double> K_final = Xt_final.Transpose();                    // 9x3
+            Matrix<double> Xt_final = SolveSymmetric(S_mat_final, PHt_final.Transpose());
+            Matrix<double> K_final = Xt_final.Transpose();
             Matrix<double> KH = K_final * HjacFinal;
             Covariance = (I - KH) * Covariance * (I - KH).Transpose() + K_final * customMeasurementCov * K_final.Transpose();
             Covariance = 0.5 * (Covariance + Covariance.Transpose());
@@ -212,6 +249,25 @@ namespace RealRadarSim.Tracking
             if (rho < 1e-9) rho = 1e-9;
             double el = Math.Atan2(pz, rho);
             return DenseVector.OfArray(new double[] { range, az, el });
+        }
+
+        /// <summary>
+        /// Extended measurement function with Doppler: [range, azimuth, elevation, range_rate].
+        /// Range rate is the radial velocity projected along the line of sight.
+        /// </summary>
+        public Vector<double> HWithDoppler(Vector<double> x)
+        {
+            double px = x[0], py = x[1], pz = x[2];
+            double vx = x[3], vy = x[4], vz = x[5];
+            double range = Math.Sqrt(px * px + py * py + pz * pz);
+            if (range < 1e-6) range = 1e-6;
+            double az = Math.Atan2(py, px);
+            double rho = Math.Sqrt(px * px + py * py);
+            if (rho < 1e-9) rho = 1e-9;
+            double el = Math.Atan2(pz, rho);
+            double dot = px * vx + py * vy + pz * vz;
+            double rr = dot / range;
+            return DenseVector.OfArray(new double[] { range, az, el, rr });
         }
 
         /// <summary>
@@ -250,6 +306,50 @@ namespace RealRadarSim.Tracking
         }
 
         /// <summary>
+        /// Jacobian for the extended measurement [range, azimuth, elevation, range_rate].
+        /// </summary>
+        private Matrix<double> JacobianWithDoppler(Vector<double> x)
+        {
+            double px = x[0], py = x[1], pz = x[2];
+            double vx = x[3], vy = x[4], vz = x[5];
+            double range = Math.Sqrt(px * px + py * py + pz * pz);
+            if (range < 1e-6) range = 1e-6;
+            double denomXY = px * px + py * py;
+            if (denomXY < 1e-9) denomXY = 1e-9;
+            double rho = Math.Sqrt(denomXY);
+            if (rho < 1e-9) rho = 1e-9;
+
+            var H = DenseMatrix.Create(4, 9, 0.0);
+
+            // range
+            H[0, 0] = px / range;
+            H[0, 1] = py / range;
+            H[0, 2] = pz / range;
+
+            // azimuth
+            H[1, 0] = -py / denomXY;
+            H[1, 1] = px / denomXY;
+
+            // elevation
+            double range2 = range * range;
+            H[2, 0] = -pz * px / (range2 * rho);
+            H[2, 1] = -pz * py / (range2 * rho);
+            H[2, 2] = rho / range2;
+
+            // range_rate
+            double dot = px * vx + py * vy + pz * vz;
+            double r3 = range2 * range;
+            H[3, 0] = (vx / range) - (dot * px) / r3;  // d(rr)/dpx
+            H[3, 1] = (vy / range) - (dot * py) / r3;  // d(rr)/dpy
+            H[3, 2] = (vz / range) - (dot * pz) / r3;  // d(rr)/dpz
+            H[3, 3] = px / range;                      // d(rr)/dvx
+            H[3, 4] = py / range;                      // d(rr)/dvy
+            H[3, 5] = pz / range;                      // d(rr)/dvz
+
+            return H;
+        }
+
+        /// <summary>
         /// Returns the innovation covariance S = H * Covariance * Hᵀ + R.
         /// </summary>
         public Matrix<double> S()
@@ -264,6 +364,79 @@ namespace RealRadarSim.Tracking
         public Matrix<double> GetMeasurementNoiseCov()
         {
             return R;
+        }
+
+        /// <summary>
+        /// Optional update that supports a 4D measurement vector with Doppler (range rate).
+        /// If z has 3 elements, falls back to the standard position-only model.
+        /// </summary>
+        public void UpdateWithDoppler(Vector<double> z, Matrix<double> customMeasurementCov)
+        {
+            if (z.Count == 3)
+            {
+                Update(z, customMeasurementCov);
+                return;
+            }
+            if (z.Count != 4)
+                throw new ArgumentException("Measurement vector must be length 3 or 4.");
+
+            int maxIterations = 3;
+            double tolerance = 1e-3;
+            Vector<double> statePrev = State.Clone();
+
+            for (int iter = 0; iter < maxIterations; iter++)
+            {
+                var hVal = HWithDoppler(State);
+                var y = z - hVal;
+                y[1] = MathUtil.NormalizeAngle(y[1]);
+                y[2] = MathUtil.NormalizeAngle(y[2]);
+
+                var Hjac = JacobianWithDoppler(State);
+                var S_mat = Hjac * Covariance * Hjac.Transpose() + customMeasurementCov +
+                            DenseMatrix.CreateIdentity(4) * 1e-2;
+
+                var PHt = Covariance * Hjac.Transpose();
+                var Xt = SolveSymmetric(S_mat, PHt.Transpose());
+                var K = Xt.Transpose();
+
+                var stateUpdate = K * y;
+                State = State + stateUpdate;
+
+                if ((State - statePrev).L2Norm() < tolerance)
+                    break;
+                statePrev = State.Clone();
+            }
+
+            // Adaptive process noise based on final innovation
+            var finalH = HWithDoppler(State);
+            var finalY = z - finalH;
+            finalY[1] = MathUtil.NormalizeAngle(finalY[1]);
+            finalY[2] = MathUtil.NormalizeAngle(finalY[2]);
+
+            var Hfinal = JacobianWithDoppler(State);
+            var Sfinal = Hfinal * Covariance * Hfinal.Transpose() + customMeasurementCov +
+                         DenseMatrix.CreateIdentity(4) * 1e-2;
+            var x_md = SolveSymmetric(Sfinal, finalY);
+            double md2 = finalY.DotProduct(x_md);
+
+            if (md2 > 12.0)
+                adaptiveSigmaJ = Math.Min(adaptiveSigmaJ * 1.2, sigmaJ * 10.0);
+            else if (md2 < 4.0)
+                adaptiveSigmaJ = Math.Max(adaptiveSigmaJ * 0.8, sigmaJ);
+
+            // Covariance update (Joseph form)
+            var I4 = DenseMatrix.CreateIdentity(9);
+            var PHt_f = Covariance * Hfinal.Transpose();
+            var Xt_f = SolveSymmetric(Sfinal, PHt_f.Transpose());
+            var Kf = Xt_f.Transpose();
+            var KH = Kf * Hfinal;
+            Covariance = (I4 - KH) * Covariance * (I4 - KH).Transpose() + Kf * customMeasurementCov * Kf.Transpose();
+            Covariance = 0.5 * (Covariance + Covariance.Transpose());
+
+            // Minimum variance guard on the diagonal
+            double minVar = 400;
+            for (int i = 0; i < Covariance.RowCount; i++)
+                if (Covariance[i, i] < minVar) Covariance[i, i] = minVar;
         }
 
     }

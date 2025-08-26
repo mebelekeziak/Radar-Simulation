@@ -68,6 +68,10 @@ namespace RealRadarSim.Tracking
         public double ExistenceIncreaseGain { get; set; } = 0.2;
         public double ExistenceDecayFactor { get; set; } = 0.995;
 
+        // Doppler fusion control (mirrors AdvancedRadar settings)
+        public bool UseDopplerProcessing { get; set; } = false;
+        public double VelocityNoiseStd { get; set; } = 1.0;
+
         /// Percentage of slant range that we are willing to fuse at long range.
         /// 0.03 → 3 % of 60 km ≈ 1.8 km.
         public double RangeMergeFraction { get; set; } = 0.03;
@@ -323,7 +327,25 @@ namespace RealRadarSim.Tracking
                     baseR[1, 1] *= scale;
                     baseR[2, 2] *= scale;
 
-                    trk.Filter.Update(z, baseR);
+                    if (UseDopplerProcessing && trk.Filter is ManeuveringEKF ekf)
+                    {
+                        double vrStd = Math.Max(1e-3, VelocityNoiseStd) * Math.Sqrt(scale);
+                        double vrVar = vrStd * vrStd;
+                        var z4 = DenseVector.OfArray(new[] { measurements[bestM].Range,
+                                                             measurements[bestM].Azimuth,
+                                                             measurements[bestM].Elevation,
+                                                             measurements[bestM].RadialVelocity });
+                        var R4 = DenseMatrix.Create(4, 4, 0.0);
+                        R4[0, 0] = baseR[0, 0];
+                        R4[1, 1] = baseR[1, 1];
+                        R4[2, 2] = baseR[2, 2];
+                        R4[3, 3] = vrVar;
+                        ekf.UpdateWithDoppler(z4, R4);
+                    }
+                    else
+                    {
+                        trk.Filter.Update(z, baseR);
+                    }
                     trk.Age = 0;
                     double incr = Math.Clamp(wsum, 0.1, 1.0) * ExistenceIncreaseGain;
                     trk.ExistenceProb = Math.Min(1.0, trk.ExistenceProb + incr);
@@ -712,7 +734,22 @@ namespace RealRadarSim.Tracking
                     baseR[1, 1] *= scale;
                     baseR[2, 2] *= scale;
 
-                    trk.Filter.Update(z, baseR);
+                    if (UseDopplerProcessing && trk.Filter is ManeuveringEKF ekf)
+                    {
+                        double vrStd = Math.Max(1e-3, VelocityNoiseStd) * Math.Sqrt(scale);
+                        double vrVar = vrStd * vrStd;
+                        var z4 = DenseVector.OfArray(new[] { m.Range, m.Azimuth, m.Elevation, m.RadialVelocity });
+                        var R4 = DenseMatrix.Create(4, 4, 0.0);
+                        R4[0, 0] = baseR[0, 0];
+                        R4[1, 1] = baseR[1, 1];
+                        R4[2, 2] = baseR[2, 2];
+                        R4[3, 3] = vrVar;
+                        ekf.UpdateWithDoppler(z4, R4);
+                    }
+                    else
+                    {
+                        trk.Filter.Update(z, baseR);
+                    }
 
                     // House‑keeping
                     trk.Age = 0;

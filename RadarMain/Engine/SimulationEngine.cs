@@ -186,6 +186,10 @@ namespace RealRadarSim.Engine
                 Radar.DopplerCFARGuard = dopplerCFARGuard;
                 Radar.DopplerCFARThresholdMultiplier = dopplerCFARThresholdMultiplier;
 
+                // Mirror Doppler settings into TrackManager for fusion
+                trackManager.UseDopplerProcessing = useDopplerProcessing;
+                trackManager.VelocityNoiseStd = velocityNoiseStd;
+
                 string debugText = $"[DEBUG] Loaded radar config values:\n" +
                                    $"FrequencyHz: {FrequencyHz}\n" +
                                    $"TxPower_dBm: {TxPower_dBm}\n" +
@@ -305,6 +309,9 @@ namespace RealRadarSim.Engine
                 5.0,
                 40.0       // pathLossExponent_dB
             );
+            // Default Doppler disabled; keep TrackManager consistent
+            trackManager.UseDopplerProcessing = Radar.UseDopplerProcessing;
+            trackManager.VelocityNoiseStd = Radar.VelocityNoiseStd;
             SetDefaultTargets();
         }
 
