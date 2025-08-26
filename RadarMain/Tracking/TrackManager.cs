@@ -142,6 +142,8 @@ namespace RealRadarSim.Tracking
             double[] measurementLikelihoodSum = new double[nMeas];
             double[] beta0 = new double[nMeas];
             var beta = new Dictionary<(int, int), double>();
+            // Track which measurement indices were actually used to update any track
+            var usedMeasurements = new HashSet<int>();
 
             // --- per‐track caches ---
             var zPreds = new Vector<double>[nTracks];
@@ -212,10 +214,12 @@ namespace RealRadarSim.Tracking
 
                     double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
 
-                    // SNR-adaptive gating: tighten threshold for strong detections
+                    // SNR-adaptive gating (gentle): avoid over-tightening for high SNR
+                    // Use sqrt(SNR) scaling and enforce a reasonable chi-square floor (~95% for 3 dof ≈ 7.8)
                     double snrLin = Math.Max(0.0, Math.Pow(10.0, meas.SNR_dB / 10.0));
-                    double snrGateFactor = 1.0 / (1.0 + 0.3 * snrLin); // in (0,1] as SNR grows
-                    double adaptThSNR = Math.Max(2.0, adaptTh * Math.Clamp(snrGateFactor, 0.2, 1.0));
+                    double snrGateFactor = 1.0 / (1.0 + 0.05 * Math.Sqrt(snrLin)); // mild tightening
+                    snrGateFactor = Math.Clamp(snrGateFactor, 0.7, 1.0);
+                    double adaptThSNR = Math.Max(7.5, adaptTh * snrGateFactor);
 
                     if (d2 < adaptThSNR)
                         gateMatrix[i].Add(m);
@@ -323,6 +327,9 @@ namespace RealRadarSim.Tracking
                     trk.Age = 0;
                     double incr = Math.Clamp(wsum, 0.1, 1.0) * ExistenceIncreaseGain;
                     trk.ExistenceProb = Math.Min(1.0, trk.ExistenceProb + incr);
+
+                    // Mark this measurement as consumed by a track update
+                    usedMeasurements.Add(bestM);
                 }
                 else
                 {
@@ -330,7 +337,10 @@ namespace RealRadarSim.Tracking
                 }
             }
 
-            CreateOrUpdateCandidates(measurements, beta0);
+            // Only suppress candidate creation for measurements actually used to update tracks.
+            // This avoids starving new target initiation when a detection merely falls in a gate
+            // but was not selected by any track for an update.
+            CreateOrUpdateCandidates(measurements, usedMeasurements);
             ConfirmCandidates();
             MergeTracksDBSCAN();
             PruneTracks();
@@ -661,19 +671,13 @@ namespace RealRadarSim.Tracking
 
         #region Candidate Track Management
 
-        private void CreateOrUpdateCandidates(List<Measurement> measurements, double[] beta0)
+        private void CreateOrUpdateCandidates(List<Measurement> measurements, HashSet<int> usedByTracks)
         {
-            // Mark measurements that are well-associated with existing tracks.
-            HashSet<int> associated = new HashSet<int>();
-            for (int m = 0; m < measurements.Count; m++)
-            {
-                if (beta0[m] < 0.9)
-                    associated.Add(m);
-            }
+            // Treat only measurements actually used to update tracks as associated.
             // For the remaining measurements, update or create new candidates.
             for (int m = 0; m < measurements.Count; m++)
             {
-                if (associated.Contains(m))
+                if (usedByTracks.Contains(m))
                     continue;
                 CreateOrUpdateCandidate(measurements[m]);
             }
