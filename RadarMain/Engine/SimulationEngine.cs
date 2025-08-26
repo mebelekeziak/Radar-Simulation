@@ -20,6 +20,7 @@ namespace RealRadarSim.Engine
         private TrackManager trackManager;
         private Random rng;
         private List<Measurement> lastMeasurements = new List<Measurement>();
+        private readonly List<string> configWarnings = new List<string>();
 
         // Throttle for target hit logging (in simulation seconds)
         private double lastTargetHitLogTime = -1.0;
@@ -104,12 +105,26 @@ namespace RealRadarSim.Engine
                 double cfarGuardWidth = GetNumberOrDefault(radarTable, "cfarGuardWidth", 300.0);
                 double cfarThresholdMultiplier = GetNumberOrDefault(radarTable, "cfarThresholdMultiplier", 8.0);
                 double clusterDistanceMeters = GetNumberOrDefault(radarTable, "clusterDistanceMeters", 600.0);
-                string radarType = radarTable.Get("radarType").Type == DataType.String
+                string radarTypeRaw = radarTable.Get("radarType").Type == DataType.String
                     ? radarTable.Get("radarType").String
                     : "ground";
-                string antennaPattern = radarTable.Get("antennaPattern").Type == DataType.String
-                    ? radarTable.Get("antennaPattern").String.ToLower()
+                string radarType = (radarTypeRaw ?? "ground").ToLower();
+                if (radarType != "ground" && radarType != "aircraft")
+                {
+                    configWarnings.Add($"Unsupported radar.radarType='{radarTypeRaw}', defaulting to 'ground'.");
+                    radarType = "ground";
+                }
+
+                string antennaPatternRaw = radarTable.Get("antennaPattern").Type == DataType.String
+                    ? radarTable.Get("antennaPattern").String
                     : "gaussian";
+                string antennaPattern = (antennaPatternRaw ?? "gaussian").ToLower();
+                bool antennaPatternOk = antennaPattern == "gaussian" || antennaPattern == "sinc2" || antennaPattern == "sinc^2" || antennaPattern == "sinc";
+                if (!antennaPatternOk)
+                {
+                    configWarnings.Add($"Unsupported radar.antennaPattern='{antennaPatternRaw}', defaulting to 'gaussian'.");
+                    antennaPattern = "gaussian";
+                }
 
                 double antennaHeight = GetNumberOrDefault(radarTable, "antennaHeight", 0.0);
                 bool showAzimuthBars = GetBoolOrDefault(radarTable, "showAzimuthBars", false);
@@ -181,11 +196,17 @@ namespace RealRadarSim.Engine
                 Radar.ShowElevationBars = showElevationBars;
                 Radar.AntennaPattern = antennaPattern;
 
-                if (radarType.ToLower() == "aircraft")
+                if (radarType == "aircraft")
                 {
-                    string opMode = radarTable.Get("operationMode").Type == DataType.String
-                        ? radarTable.Get("operationMode").String.ToLower()
+                    string opModeRaw = radarTable.Get("operationMode").Type == DataType.String
+                        ? radarTable.Get("operationMode").String
                         : "mechanical";
+                    string opMode = (opModeRaw ?? "mechanical").ToLower();
+                    if (opMode != "aesa" && opMode != "mechanical")
+                    {
+                        configWarnings.Add($"Unsupported radar.operationMode='{opModeRaw}', defaulting to 'mechanical'.");
+                        opMode = "mechanical";
+                    }
                     Radar.UseAesaMode = (opMode == "aesa");
                 }
             }
@@ -391,6 +412,7 @@ namespace RealRadarSim.Engine
         public List<Measurement> GetLastMeasurements() => lastMeasurements;
         public AdvancedRadar GetRadar() => Radar;
         public string GetRadarType() => Radar.RadarType;
+        public IReadOnlyList<string> GetConfigWarnings() => configWarnings.AsReadOnly();
 
         // --- KD‑tree implementation for 3D nearest-neighbor search ---
         private class KdTreeNode

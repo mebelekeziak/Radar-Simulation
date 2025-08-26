@@ -449,6 +449,16 @@ namespace RealRadarSim.Forms
                 $"[+/-] Zoom  [U] Unlock\n" +
                 $"Pan: Drag background";
 
+            var warnings = engine.GetConfigWarnings();
+            if (warnings != null && warnings.Count > 0)
+            {
+                status += "\n\nWARN: Unsupported config value(s):\n";
+                foreach (var w in warnings)
+                {
+                    status += "- " + w + "\n";
+                }
+            }
+
             SizeF sz = g.MeasureString(status, uiFont);
             RectangleF panelRect = new RectangleF(18, this.ClientSize.Height - sz.Height - 36, sz.Width + 32, sz.Height + 24);
 
