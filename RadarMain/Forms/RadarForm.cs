@@ -308,6 +308,12 @@ namespace RealRadarSim.Forms
                 g.DrawLine(sweepPen, 0, 0, x2, y2);
             }
 
+            // Debug-only: draw antenna beam/lobe intensity by antennaPattern/beamwidth
+            if (debugMode)
+            {
+                DrawDebugAntennaBeam(g, radar);
+            }
+
             var tracks = engine.GetTracks();
             hoveredTrack = null;
             float closestDist = float.MaxValue;
@@ -477,6 +483,88 @@ namespace RealRadarSim.Forms
         private void RadarForm_Load(object sender, EventArgs e)
         {
 
+        }
+
+        // --------------------------- Debug beam/lobe rendering ---------------------------
+        private static double OffBoresightGainUI(string pattern, double thetaRad, double bwRad)
+        {
+            if (thetaRad <= 0) return 1.0;
+            double bw = Math.Max(1e-6, bwRad);
+            string pat = (pattern ?? "gaussian").ToLower();
+            if (pat == "sinc2" || pat == "sinc^2" || pat == "sinc")
+            {
+                const double u_hp = 1.39156; // solves sinc(u_hp) = 1/sqrt(2)
+                double k = 2.0 * u_hp / bw;
+                double u = k * thetaRad;
+                double s = Math.Abs(u) < 1e-8 ? 1.0 : Math.Sin(u) / u;
+                double g = s * s;
+                return Math.Max(0.0, Math.Min(1.0, g));
+            }
+            else
+            {
+                double x = thetaRad / bw;
+                double g = Math.Exp(-4.0 * Math.Log(2.0) * x * x); // -3 dB at BW/2
+                return Math.Max(0.0, Math.Min(1.0, g));
+            }
+        }
+
+        private void DrawPatternForBeam(Graphics g, double centerAzRad, double bwRad, string pattern, Color baseColor)
+        {
+            int segments = 72; // angular resolution of the lobe
+            double start = centerAzRad - 0.5 * bwRad;
+            double dphi = bwRad / segments;
+
+            for (int i = 0; i < segments; i++)
+            {
+                // Mid-angle for intensity sampling
+                double a0 = start + i * dphi;
+                double amid = a0 + 0.5 * dphi;
+                double theta = Math.Abs(amid - centerAzRad);
+                double gain = OffBoresightGainUI(pattern, theta, bwRad);
+                // Small gamma to improve visibility of sidelobes
+                gain = Math.Pow(gain, 0.7);
+
+                int alpha = (int)(gain * 185); // cap max alpha
+                if (alpha <= 0) continue;
+
+                using (Brush b = new SolidBrush(Color.FromArgb(alpha, baseColor)))
+                {
+                    float startDeg = (float)(a0 * 180.0 / Math.PI);
+                    float sweepDeg = (float)(dphi * 180.0 / Math.PI);
+                    g.FillPie(b,
+                        -radarDisplayRadius, -radarDisplayRadius,
+                        radarDisplayRadius * 2, radarDisplayRadius * 2,
+                        startDeg, sweepDeg);
+                }
+            }
+        }
+
+        private void DrawDebugAntennaBeam(Graphics g, AdvancedRadar radar)
+        {
+            // Choose a vivid base color for the lobe overlay
+            Color baseColor = Color.FromArgb(0, 255, 180);
+            double bw = radar.BeamWidthRad;
+
+            if (radar.RadarType.ToLower() == "aircraft")
+            {
+                if (radar.UseAesaMode && radar.AesaBeams != null && radar.AesaBeams.Count > 0)
+                {
+                    foreach (var beam in radar.AesaBeams)
+                    {
+                        DrawPatternForBeam(g, beam.CurrentAzimuth, bw, radar.AntennaPattern, baseColor);
+                    }
+                }
+                else
+                {
+                    DrawPatternForBeam(g, radar.CurrentAzimuth, bw, radar.AntennaPattern, baseColor);
+                }
+            }
+            else
+            {
+                // Ground/mechanical: use current beam angle from engine helper
+                double az = engine.GetCurrentBeamAngle();
+                DrawPatternForBeam(g, az, bw, radar.AntennaPattern, baseColor);
+            }
         }
     }
 }
