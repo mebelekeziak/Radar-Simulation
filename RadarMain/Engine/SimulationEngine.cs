@@ -7,6 +7,7 @@ using MoonSharp.Interpreter.Loaders;
 using RealRadarSim.Models;
 using RealRadarSim.Tracking;
 using RealRadarSim.Logging;
+using RealRadarSim.Utils;
 
 namespace RealRadarSim.Engine
 {
@@ -193,6 +194,34 @@ namespace RealRadarSim.Engine
                 trackManager.RangeNoiseBase = rangeNoiseBase;
                 trackManager.AngleNoiseBase = angleNoiseBase;
 
+                // Auto-scale persistence to revisit time (general fix for slow scans)
+                // Ground radar revisits every 360°; aircraft sweeps left-right across its azimuth span.
+                double rotSpeed = MathUtil.DegToRad(rotationSpeedDegSec); // rad/s
+                double revisitSec;
+                if ((radarType == "aircraft") && antennaAzimuthScan > 0.0)
+                {
+                    // Approximate: traverse from -A/2 to +A/2 and back → 2*A degrees
+                    revisitSec = MathUtil.DegToRad(2.0 * antennaAzimuthScan) / Math.Max(1e-6, rotSpeed);
+                }
+                else
+                {
+                    revisitSec = (2.0 * Math.PI) / Math.Max(1e-6, rotSpeed);
+                }
+
+                // If user provided an unrealistically small MaxTrackAge (e.g., < 4 sweeps),
+                // clamp it up to avoid premature pruning just before the next revisit.
+                // Using 4× revisit covers three consecutive misses plus a margin before the 4th pass.
+                double minAge = 4.0 * revisitSec;
+                if (trackManager.MaxTrackAge < minAge)
+                {
+                    RealRadarSim.Logging.DebugLogger.Log("Config", $"MaxTrackAge increased to {minAge:F1}s (>=4× revisit {revisitSec:F1}s).");
+                    trackManager.MaxTrackAge = minAge;
+                }
+
+                // Use an existence half-life of ~3 sweeps so P(exist) decays smoothly across misses
+                // and remains high enough for association until the next pass.
+                trackManager.ExistenceHalfLifeSec = 3.0 * revisitSec;
+
                 string debugText = $"[DEBUG] Loaded radar config values:\n" +
                                    $"FrequencyHz: {FrequencyHz}\n" +
                                    $"TxPower_dBm: {TxPower_dBm}\n" +
@@ -290,6 +319,9 @@ namespace RealRadarSim.Engine
                 trackManager.MaxTrackMergeDist = GetNumberOrDefault(tm, "maxTrackMergeDist", 800.0);
                 trackManager.MaxTrackAge = GetNumberOrDefault(tm, "maxTrackAge", 40.0);
                 trackManager.CandidateMergeDistance = GetNumberOrDefault(tm, "candidateMergeDistance", 1500.0);
+
+                // If the Lua config explicitly sets a higher MaxTrackAge, keep it;
+                // otherwise (or if it's too small) it may have been adjusted above.
             }
         }
 
@@ -318,6 +350,12 @@ namespace RealRadarSim.Engine
             // Align TrackManager noise bases with defaults used in AdvancedRadar above
             trackManager.RangeNoiseBase = 100.0;
             trackManager.AngleNoiseBase = 0.001;
+
+            // Scale age/decay with revisit time for defaults too
+            double rotSpeed = MathUtil.DegToRad(36.0); // rad/s from default above
+            double revisitSec = (2.0 * Math.PI) / Math.Max(1e-6, rotSpeed);
+            trackManager.MaxTrackAge = Math.Max(trackManager.MaxTrackAge, 4.0 * revisitSec);
+            trackManager.ExistenceHalfLifeSec = 3.0 * revisitSec;
             SetDefaultTargets();
         }
 

@@ -66,7 +66,15 @@ namespace RealRadarSim.Tracking
         public double CandidateMergeDistance { get; set; } = 1500.0;
         public double ClutterDensity { get; set; } = 1e-6;
         public double ExistenceIncreaseGain { get; set; } = 0.2;
+        // Legacy per-step decay factor (kept for backward compatibility when
+        // Half-life based decay is not configured). If ExistenceHalfLifeSec > 0,
+        // we will use that model instead and ignore this factor except in unit tests.
         public double ExistenceDecayFactor { get; set; } = 0.995;
+
+        // Prefer half-life based decay so probability decays by 50% over a
+        // configurable time horizon (e.g., a few revisit intervals), regardless
+        // of dt. If <= 0, falls back to ExistenceDecayFactor each step.
+        public double ExistenceHalfLifeSec { get; set; } = -1.0;
 
         // Doppler fusion control (mirrors AdvancedRadar settings)
         public bool UseDopplerProcessing { get; set; } = false;
@@ -361,7 +369,40 @@ namespace RealRadarSim.Tracking
                 }
                 else
                 {
-                    tracks[i].ExistenceProb *= ExistenceDecayFactor;
+                    // No JPDA update selected for this track.
+                    // If there is at least one measurement providing evidence of presence
+                    // within a loose 3D position gate, do NOT decay existence this step.
+                    // This guards against cases where a valid raw detection is present
+                    // but association lost out due to competition or gating subtleties.
+                    bool hasLooseEvidence = false;
+                    for (int m = 0; m < nMeas; m++)
+                    {
+                        if (FitsLoosePositionGate(measurements[m], tracks[i]))
+                        {
+                            hasLooseEvidence = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasLooseEvidence)
+                    {
+                        // Existence decay only when truly no supporting evidence.
+                        if (ExistenceHalfLifeSec > 0.0)
+                        {
+                            // Per-step decay computed from half-life and dt: 0.5^(dt/HL)
+                            double halfLife = Math.Max(1e-3, ExistenceHalfLifeSec);
+                            double factor = Math.Pow(0.5, Math.Max(1e-6, dt) / halfLife);
+                            tracks[i].ExistenceProb *= factor;
+                        }
+                        else
+                        {
+                            // Legacy: per-tick factor (dt-agnostic)
+                            tracks[i].ExistenceProb *= ExistenceDecayFactor;
+                        }
+                    }
+                    // Optional: If you want a micro bump instead of a freeze when evidence exists,
+                    // consider uncommenting below:
+                    // else { tracks[i].ExistenceProb = Math.Min(1.0, tracks[i].ExistenceProb + 0.5 * ExistenceIncreaseGain * 0.1); }
                 }
             }
 
@@ -713,60 +754,76 @@ namespace RealRadarSim.Tracking
 
         private void CreateOrUpdateCandidate(Measurement m)
         {
-            // Convert to the 3‑D vector 
+            // Convert to the 3‑D vector
             Vector<double> measVec = DenseVector.OfArray(new double[] { m.Range, m.Azimuth, m.Elevation });
             // Build a 9×9 cov with your same initial STD settings
             var (initState, initCov) = MeasurementToInitialState(measVec);
-            if (IsDuplicateTrack(initState, initCov))
-                return;   // right here — no candidate ever created
 
             /* -------------------------------------------------------------
-             * 1)  FIRST: can this measurement still belong to an EXISTING
-             *     track under a *loose* 3‑σ position gate?  If yes we feed
-             *     it into that track and STOP — no candidate needed.
+             * 1) FIRST: try to RESCUE‑UPDATE an existing track using a loose
+             *    3‑D position gate. Choose the best matching track by smallest
+             *    Mahalanobis distance in position space.
              * ----------------------------------------------------------- */
+            JPDA_Track bestTrk = null;
+            double bestD2 = double.PositiveInfinity;
             foreach (var trk in tracks)
             {
-                if (FitsLoosePositionGate(m, trk))
+                // Compute loose‑gate distance
+                var zCart = MeasurementToCartesian(m);
+                var xPos = trk.Filter.State.SubVector(0, 3);
+                var diff = zCart - xPos;
+                var Ppos = trk.Filter.Covariance.SubMatrix(0, 3, 0, 3).Clone();
+                for (int i = 0; i < 3; i++) Ppos[i, i] += 1e-6;
+                double d2 = MahalanobisSquared(diff, Ppos);
+                if (d2 < RescueGateChi2 && d2 < bestD2)
                 {
-                    // Convert into the 3‑D spherical vector expected by the EKF
-                    Vector<double> z = ToVector(m);
-
-                    // Per‑measurement R consistent with generator noise vs SNR
-                    double snrLin = Math.Max(1e-6, Math.Pow(10.0, m.SNR_dB / 10.0));
-                    double rVar = Math.Max(1.0, (RangeNoiseBase * RangeNoiseBase) / snrLin);
-                    double aVar = Math.Max(1e-12, (AngleNoiseBase * AngleNoiseBase) / snrLin);
-                    Matrix<double> baseR = DenseMatrix.Create(3, 3, 0.0);
-                    baseR[0, 0] = rVar;
-                    baseR[1, 1] = aVar;
-                    baseR[2, 2] = aVar;
-
-                    if (UseDopplerProcessing && trk.Filter is ManeuveringEKF ekf)
-                    {
-                        double vrVar = Math.Max(1e-6, VelocityNoiseStd * VelocityNoiseStd);
-                        var z4 = DenseVector.OfArray(new[] { m.Range, m.Azimuth, m.Elevation, m.RadialVelocity });
-                        var R4 = DenseMatrix.Create(4, 4, 0.0);
-                        R4[0, 0] = baseR[0, 0];
-                        R4[1, 1] = baseR[1, 1];
-                        R4[2, 2] = baseR[2, 2];
-                        R4[3, 3] = vrVar;
-                        ekf.UpdateWithDoppler(z4, R4);
-                    }
-                    else
-                    {
-                        trk.Filter.Update(z, baseR);
-                    }
-
-                    // House‑keeping
-                    trk.Age = 0;
-                    trk.ExistenceProb = Math.Min(1.0, trk.ExistenceProb + ExistenceIncreaseGain);
-                    return;                         // measurement consumed – we're done
+                    bestD2 = d2;
+                    bestTrk = trk;
                 }
+            }
+            if (bestTrk != null)
+            {
+                // Convert into the 3‑D spherical vector expected by the EKF
+                Vector<double> z = ToVector(m);
+
+                // Per‑measurement R consistent with generator noise vs SNR
+                double snrLin = Math.Max(1e-6, Math.Pow(10.0, m.SNR_dB / 10.0));
+                double rVar = Math.Max(1.0, (RangeNoiseBase * RangeNoiseBase) / snrLin);
+                double aVar = Math.Max(1e-12, (AngleNoiseBase * AngleNoiseBase) / snrLin);
+                Matrix<double> baseR = DenseMatrix.Create(3, 3, 0.0);
+                baseR[0, 0] = rVar;
+                baseR[1, 1] = aVar;
+                baseR[2, 2] = aVar;
+
+                if (UseDopplerProcessing && bestTrk.Filter is ManeuveringEKF ekf)
+                {
+                    double vrVar = Math.Max(1e-6, VelocityNoiseStd * VelocityNoiseStd);
+                    var z4 = DenseVector.OfArray(new[] { m.Range, m.Azimuth, m.Elevation, m.RadialVelocity });
+                    var R4 = DenseMatrix.Create(4, 4, 0.0);
+                    R4[0, 0] = baseR[0, 0];
+                    R4[1, 1] = baseR[1, 1];
+                    R4[2, 2] = baseR[2, 2];
+                    R4[3, 3] = vrVar;
+                    ekf.UpdateWithDoppler(z4, R4);
+                }
+                else
+                {
+                    bestTrk.Filter.Update(z, baseR);
+                }
+
+                // House‑keeping
+                bestTrk.Age = 0;
+                bestTrk.ExistenceProb = Math.Min(1.0, bestTrk.ExistenceProb + ExistenceIncreaseGain);
+                return; // measurement consumed – we're done
             }
 
             /* -------------------------------------------------------------
-             * 2) Otherwise proceed with the classic candidate logic
+             * 2) Otherwise proceed with the classic candidate logic. Before
+             *    creating/merging candidates, prevent duplicates with existing
+             *    confirmed tracks.
              * ----------------------------------------------------------- */
+            if (IsDuplicateTrack(initState, initCov))
+                return;   // close to an existing track → no candidate needed
 
             // Bail out if still too close to an existing track *geometrically*
             foreach (var trk in tracks)
