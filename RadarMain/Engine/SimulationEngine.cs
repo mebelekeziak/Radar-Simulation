@@ -221,6 +221,8 @@ namespace RealRadarSim.Engine
                 // Use an existence half-life of ~3 sweeps so P(exist) decays smoothly across misses
                 // and remains high enough for association until the next pass.
                 trackManager.ExistenceHalfLifeSec = 3.0 * revisitSec;
+                // Provide revisit time to TrackManager for age-driven gating.
+                trackManager.RevisitTimeSec = revisitSec;
 
                 string debugText = $"[DEBUG] Loaded radar config values:\n" +
                                    $"FrequencyHz: {FrequencyHz}\n" +
@@ -356,6 +358,7 @@ namespace RealRadarSim.Engine
             double revisitSec = (2.0 * Math.PI) / Math.Max(1e-6, rotSpeed);
             trackManager.MaxTrackAge = Math.Max(trackManager.MaxTrackAge, 4.0 * revisitSec);
             trackManager.ExistenceHalfLifeSec = 3.0 * revisitSec;
+            trackManager.RevisitTimeSec = revisitSec;
             SetDefaultTargets();
         }
 

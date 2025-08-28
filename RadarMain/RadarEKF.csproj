@@ -11,6 +11,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Missile\**" />
+    <EmbeddedResource Remove="Missile\**" />
+    <None Remove="Missile\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="Assets\Fonts\RobotoCondensed.ttf" />
   </ItemGroup>
 
@@ -22,10 +28,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\Fonts\RobotoCondensed.ttf" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="Missile\" />
   </ItemGroup>
 
 </Project>

@@ -32,7 +32,7 @@ namespace RealRadarSim.Forms
         private Font trackFont = new Font("Segoe UI", 10f, FontStyle.Regular);
         private Font uiFont = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold);
 
-        private readonly Brush confirmedTrackBrush = new SolidBrush(Color.Orange);
+        private readonly Brush confirmedTrackBrush = new SolidBrush(Color.FromArgb(255, 57, 255, 20));
         private Point mousePos;
 
         private float zoomFactor = 1.0f;

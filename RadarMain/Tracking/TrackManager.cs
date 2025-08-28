@@ -91,6 +91,10 @@ namespace RealRadarSim.Tracking
         // Measurement dimension (range, azimuth, elevation)
         private int measurementDimension = 3;
 
+        /// Estimated revisit period of the radar (seconds). Used to scale
+        /// age-based gating when a track is coasting (missed last update).
+        public double RevisitTimeSec { get; set; } = 10.0;
+
         public TrackManager(Random rng)
         {
             this.rng = rng;
@@ -167,6 +171,10 @@ namespace RealRadarSim.Tracking
             var normFactors = new double[nTracks];
             var rangeGates = new double[nTracks];
             var sqrtDets = new double[nTracks];
+            // Store base S (HPH^T + R0) and intrinsic R0 per track so we can
+            // form measurement-specific SNR-aware S_g later without recomputing HPH^T.
+            var SBase = new Matrix<double>[nTracks];
+            var R0s = new Matrix<double>[nTracks];
 
             // --- precompute measurement vectors to avoid repeated boxing ---
             var zMeasVecs = new Vector<double>[nMeas];
@@ -199,6 +207,9 @@ namespace RealRadarSim.Tracking
 
                 // range‐only pre‐gate threshold: sqrt(χ² ⋅ var_range)
                 rangeGates[i] = Math.Sqrt(baseGateTh * S[0, 0]);
+
+                SBase[i] = S.Clone();
+                R0s[i] = trk.Filter.GetMeasurementNoiseCov().Clone();
             });
 
             // initialize gateMatrix
@@ -212,8 +223,11 @@ namespace RealRadarSim.Tracking
                 double speed = trk.Filter.State.SubVector(3, 3).L2Norm();
                 double dynFact = 1.0 + 0.5 * (speed / 100.0);
                 double existFact = trk.ExistenceProb > 0.7 ? 1.5 : 1.0;
+                // Age-driven widening: up to +100% at ~1 revisit, capped to avoid runaway.
+                double ageRatio = Math.Min(1.0, trk.Age / Math.Max(1e-3, RevisitTimeSec));
+                double ageFact = 1.0 + 1.0 * ageRatio;
                 double adaptTh = Math.Max(5.0,
-                                    Math.Min(baseGateTh * dynFact * existFact, 1e6));
+                                    Math.Min(baseGateTh * dynFact * existFact * ageFact, 1e6));
 
                 for (int m = 0; m < nMeas; m++)
                 {
@@ -228,16 +242,30 @@ namespace RealRadarSim.Tracking
                     y[1] = MathUtil.NormalizeAngle(y[1]);
                     y[2] = MathUtil.NormalizeAngle(y[2]);
 
-                    double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
+                    // Build measurement-aware S_g by adjusting base S with SNR-scaled R.
+                    double snrLin = Math.Max(1e-6, Math.Pow(10.0, meas.SNR_dB / 10.0));
+                    double alpha = 1.0 - (1.0 / snrLin); // S_g = S0 - alpha * R0
+                    var Sg = SBase[i].Clone();
+                    // subtract alpha * R0 (or add if alpha is negative for low SNR)
+                    for (int r = 0; r < measurementDimension; r++)
+                        Sg[r, r] -= alpha * R0s[i][r, r];
+                    for (int d = 0; d < Sg.RowCount; d++) Sg[d, d] += 1e-9; // jitter
 
-                    // SNR-adaptive gating (gentle): avoid over-tightening for high SNR
-                    // Use sqrt(SNR) scaling and enforce a reasonable chi-square floor (~95% for 3 dof ≈ 7.8)
-                    double snrLin = Math.Max(0.0, Math.Pow(10.0, meas.SNR_dB / 10.0));
-                    double snrGateFactor = 1.0 / (1.0 + 0.05 * Math.Sqrt(snrLin)); // mild tightening
-                    snrGateFactor = Math.Clamp(snrGateFactor, 0.7, 1.0);
-                    double adaptThSNR = Math.Max(7.5, adaptTh * snrGateFactor);
+                    // Compute Mahalanobis using a stable Cholesky solve
+                    double d2;
+                    try
+                    {
+                        var cholg = Sg.Cholesky();
+                        var x = cholg.Solve(y);
+                        d2 = y.DotProduct(x);
+                    }
+                    catch
+                    {
+                        // Fallback to base S if numerical issues occur
+                        d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
+                    }
 
-                    if (d2 < adaptThSNR)
+                    if (d2 < adaptTh)
                         gateMatrix[i].Add(m);
                 }
             });
@@ -264,10 +292,33 @@ namespace RealRadarSim.Tracking
                     y[1] = MathUtil.NormalizeAngle(y[1]);
                     y[2] = MathUtil.NormalizeAngle(y[2]);
 
-                    double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
-                    double L = normFactors[i] * Math.Exp(-0.5 * d2);
-                    // Slightly emphasize high-SNR measurements in association
-                    double snrLin = Math.Max(0.0, Math.Pow(10.0, measurements[m].SNR_dB / 10.0));
+                    // Measurement-aware S_g and likelihood
+                    double snrLin = Math.Max(1e-6, Math.Pow(10.0, measurements[m].SNR_dB / 10.0));
+                    double alpha = 1.0 - (1.0 / snrLin);
+                    var Sg = SBase[i].Clone();
+                    for (int r = 0; r < measurementDimension; r++)
+                        Sg[r, r] -= alpha * R0s[i][r, r];
+                    for (int d = 0; d < Sg.RowCount; d++) Sg[d, d] += 1e-9;
+
+                    double L;
+                    try
+                    {
+                        var cholg = Sg.Cholesky();
+                        // sqrt(det(Sg)) is product of chol diag
+                        var Rg = cholg.Factor;
+                        double sqrtDetg = 1.0; for (int k = 0; k < Rg.RowCount; k++) sqrtDetg *= Rg[k, k];
+                        double norm = 1.0 / (Math.Pow(2 * Math.PI, measurementDimension / 2.0) * Math.Max(sqrtDetg, 1e-6));
+                        var x = cholg.Solve(y);
+                        double d2 = y.DotProduct(x);
+                        L = norm * Math.Exp(-0.5 * d2);
+                    }
+                    catch
+                    {
+                        double d2 = (y.ToRowMatrix() * SInvs[i] * y.ToColumnMatrix())[0, 0];
+                        L = normFactors[i] * Math.Exp(-0.5 * d2);
+                    }
+
+                    // Slightly emphasize high-SNR measurements in association (kept)
                     double confBoost = Math.Clamp(Math.Sqrt(1.0 + snrLin), 1.0, 4.0);
                     L *= confBoost;
 
@@ -315,6 +366,9 @@ namespace RealRadarSim.Tracking
                 double wsum = 0.0;
                 int bestM = -1;
                 double bestW = -1.0;
+                // For mixture update
+                Vector<double> yBar = DenseVector.Create(measurementDimension, 0.0);
+                double rVarMix = 0.0, aVarMix = 0.0;
                 foreach (int m in gateMatrix[i])
                 {
                     if (beta.TryGetValue((i, m), out var w))
@@ -325,40 +379,61 @@ namespace RealRadarSim.Tracking
                             bestW = w;
                             bestM = m;
                         }
+                        // Accumulate innovation and R mix for measurement-aware mixture
+                        var z = zMeasVecs[m];
+                        var y = z - zPreds[i];
+                        y[1] = MathUtil.NormalizeAngle(y[1]);
+                        y[2] = MathUtil.NormalizeAngle(y[2]);
+                        yBar += w * y;
+
+                        double snrLin = Math.Max(1e-6, Math.Pow(10.0, measurements[m].SNR_dB / 10.0));
+                        double rVar = Math.Max(1.0, (RangeNoiseBase * RangeNoiseBase) / snrLin);
+                        double aVar = Math.Max(1e-12, (AngleNoiseBase * AngleNoiseBase) / snrLin);
+                        rVarMix += w * rVar;
+                        aVarMix += w * aVar;
                     }
                 }
 
                 if (wsum > 1e-6 && bestM >= 0)
                 {
                     var trk = tracks[i];
-                    var z = zMeasVecs[bestM];
-                    // Build per‑measurement R to match generator: sigma ∝ 1/sqrt(SNR_lin)
-                    double snrLin = Math.Max(1e-6, Math.Pow(10.0, measurements[bestM].SNR_dB / 10.0));
-                    double rVar = Math.Max(1.0, (RangeNoiseBase * RangeNoiseBase) / snrLin);
-                    double aVar = Math.Max(1e-12, (AngleNoiseBase * AngleNoiseBase) / snrLin);
-                    var baseR = DenseMatrix.Create(3, 3, 0.0);
-                    baseR[0, 0] = rVar;
-                    baseR[1, 1] = aVar;
-                    baseR[2, 2] = aVar;
-
                     if (UseDopplerProcessing && trk.Filter is ManeuveringEKF ekf)
                     {
-                        // Doppler noise in generator is not SNR-scaled; use provided std directly
+                        // Keep Doppler path as best-M update for now (gating already improved).
+                        var z = zMeasVecs[bestM];
+                        double snrLinBest = Math.Max(1e-6, Math.Pow(10.0, measurements[bestM].SNR_dB / 10.0));
+                        double rVarBest = Math.Max(1.0, (RangeNoiseBase * RangeNoiseBase) / snrLinBest);
+                        double aVarBest = Math.Max(1e-12, (AngleNoiseBase * AngleNoiseBase) / snrLinBest);
                         double vrVar = Math.Max(1e-6, VelocityNoiseStd * VelocityNoiseStd);
                         var z4 = DenseVector.OfArray(new[] { measurements[bestM].Range,
                                                              measurements[bestM].Azimuth,
                                                              measurements[bestM].Elevation,
                                                              measurements[bestM].RadialVelocity });
                         var R4 = DenseMatrix.Create(4, 4, 0.0);
-                        R4[0, 0] = baseR[0, 0];
-                        R4[1, 1] = baseR[1, 1];
-                        R4[2, 2] = baseR[2, 2];
+                        R4[0, 0] = rVarBest;
+                        R4[1, 1] = aVarBest;
+                        R4[2, 2] = aVarBest;
                         R4[3, 3] = vrVar;
                         ekf.UpdateWithDoppler(z4, R4);
                     }
                     else
                     {
-                        trk.Filter.Update(z, baseR);
+                        // JPDA mixture update in 3D: use aggregated innovation yBar and mixed R.
+                        // Construct a synthetic measurement z_bar = z_pred + yBar
+                        var zPred = zPreds[i];
+                        var zBar = zPred + yBar; // yBar already includes weights
+                        // Normalize angles in zBar to keep them bounded
+                        zBar[1] = MathUtil.NormalizeAngle(zBar[1]);
+                        zBar[2] = MathUtil.NormalizeAngle(zBar[2]);
+
+                        // Mixed measurement covariance (weighted average of per-measurement R)
+                        double wnorm = Math.Max(1e-6, wsum);
+                        var Rmix = DenseMatrix.Create(3, 3, 0.0);
+                        Rmix[0, 0] = rVarMix / wnorm;
+                        Rmix[1, 1] = aVarMix / wnorm;
+                        Rmix[2, 2] = aVarMix / wnorm;
+
+                        trk.Filter.Update(zBar, Rmix);
                     }
                     trk.Age = 0;
                     double incr = Math.Clamp(wsum, 0.1, 1.0) * ExistenceIncreaseGain;
