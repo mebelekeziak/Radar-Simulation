@@ -21,6 +21,7 @@ namespace RealRadarSim.Tracking
         private double adaptiveSigmaJ;
 
         // Measurement noise covariance (3x3): [range, azimuth, elevation].
+        // This represents a baseline; callers can supply a per‑measurement R in Update().
         private Matrix<double> R;
 
         /// <summary>
@@ -38,13 +39,33 @@ namespace RealRadarSim.Tracking
             sigmaJ = jerkNoise;
             adaptiveSigmaJ = sigmaJ; // Start with nominal value.
 
-            // Adjusted measurement noise covariance (range in meters, angles in radians).
+            // Baseline measurement noise covariance (range in meters, angles in radians).
+            // These should roughly match the generator's default noise bases in Models/AdvancedRadar.
+            // Callers can override per‑measurement via Update(z, R_custom) or UpdateWithDoppler.
             R = DenseMatrix.OfArray(new double[,]
             {
-                { 400 * 400,       0,              0 },
-                { 0,          0.1 * 0.1,         0 },
-                { 0,               0,       0.1 * 0.1 }
+                { 100 * 100,        0,               0 },   // 100 m std
+                { 0,           0.001 * 0.001,        0 },   // 0.001 rad std (~0.057°)
+                { 0,                0,          0.001 * 0.001 }
             });
+        }
+
+        /// <summary>
+        /// Constructor with explicit baseline measurement noise (std dev).
+        /// The provided std devs are converted to variances and used in the intrinsic R.
+        /// </summary>
+        public ManeuveringEKF(Vector<double> initState,
+                              Matrix<double> initCov,
+                              double jerkNoise,
+                              double rangeStd,
+                              double angleStd)
+            : this(initState, initCov, jerkNoise)
+        {
+            double rVar = Math.Max(1.0, rangeStd * rangeStd);
+            double aVar = Math.Max(1e-12, angleStd * angleStd);
+            R[0, 0] = rVar;
+            R[1, 1] = aVar;
+            R[2, 2] = aVar;
         }
 
         // ---------------------------------------------------------------------

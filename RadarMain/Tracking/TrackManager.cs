@@ -72,6 +72,10 @@ namespace RealRadarSim.Tracking
         public bool UseDopplerProcessing { get; set; } = false;
         public double VelocityNoiseStd { get; set; } = 1.0;
 
+        // Baseline measurement noise (std dev) to align EKF with generator
+        public double RangeNoiseBase { get; set; } = 100.0;   // meters (std)
+        public double AngleNoiseBase { get; set; } = 0.001;   // radians (std)
+
         /// Percentage of slant range that we are willing to fuse at long range.
         /// 0.03 → 3 % of 60 km ≈ 1.8 km.
         public double RangeMergeFraction { get; set; } = 0.03;
@@ -320,17 +324,19 @@ namespace RealRadarSim.Tracking
                 {
                     var trk = tracks[i];
                     var z = zMeasVecs[bestM];
-                    var baseR = trk.Filter.GetMeasurementNoiseCov().Clone();
+                    // Build per‑measurement R to match generator: sigma ∝ 1/sqrt(SNR_lin)
                     double snrLin = Math.Max(1e-6, Math.Pow(10.0, measurements[bestM].SNR_dB / 10.0));
-                    double scale = 1.0 / Math.Sqrt(1.0 + snrLin);
-                    baseR[0, 0] *= scale;
-                    baseR[1, 1] *= scale;
-                    baseR[2, 2] *= scale;
+                    double rVar = Math.Max(1.0, (RangeNoiseBase * RangeNoiseBase) / snrLin);
+                    double aVar = Math.Max(1e-12, (AngleNoiseBase * AngleNoiseBase) / snrLin);
+                    var baseR = DenseMatrix.Create(3, 3, 0.0);
+                    baseR[0, 0] = rVar;
+                    baseR[1, 1] = aVar;
+                    baseR[2, 2] = aVar;
 
                     if (UseDopplerProcessing && trk.Filter is ManeuveringEKF ekf)
                     {
-                        double vrStd = Math.Max(1e-3, VelocityNoiseStd) * Math.Sqrt(scale);
-                        double vrVar = vrStd * vrStd;
+                        // Doppler noise in generator is not SNR-scaled; use provided std directly
+                        double vrVar = Math.Max(1e-6, VelocityNoiseStd * VelocityNoiseStd);
                         var z4 = DenseVector.OfArray(new[] { measurements[bestM].Range,
                                                              measurements[bestM].Azimuth,
                                                              measurements[bestM].Elevation,
@@ -726,18 +732,18 @@ namespace RealRadarSim.Tracking
                     // Convert into the 3‑D spherical vector expected by the EKF
                     Vector<double> z = ToVector(m);
 
-                    // Adaptive R based on measurement SNR (higher SNR → lower noise)
-                    Matrix<double> baseR = trk.Filter.GetMeasurementNoiseCov().Clone();
+                    // Per‑measurement R consistent with generator noise vs SNR
                     double snrLin = Math.Max(1e-6, Math.Pow(10.0, m.SNR_dB / 10.0));
-                    double scale = 1.0 / Math.Sqrt(1.0 + snrLin);
-                    baseR[0, 0] *= scale;
-                    baseR[1, 1] *= scale;
-                    baseR[2, 2] *= scale;
+                    double rVar = Math.Max(1.0, (RangeNoiseBase * RangeNoiseBase) / snrLin);
+                    double aVar = Math.Max(1e-12, (AngleNoiseBase * AngleNoiseBase) / snrLin);
+                    Matrix<double> baseR = DenseMatrix.Create(3, 3, 0.0);
+                    baseR[0, 0] = rVar;
+                    baseR[1, 1] = aVar;
+                    baseR[2, 2] = aVar;
 
                     if (UseDopplerProcessing && trk.Filter is ManeuveringEKF ekf)
                     {
-                        double vrStd = Math.Max(1e-3, VelocityNoiseStd) * Math.Sqrt(scale);
-                        double vrVar = vrStd * vrStd;
+                        double vrVar = Math.Max(1e-6, VelocityNoiseStd * VelocityNoiseStd);
                         var z4 = DenseVector.OfArray(new[] { m.Range, m.Azimuth, m.Elevation, m.RadialVelocity });
                         var R4 = DenseMatrix.Create(4, 4, 0.0);
                         R4[0, 0] = baseR[0, 0];
@@ -862,8 +868,8 @@ namespace RealRadarSim.Tracking
                 }
                 // -------------------------------------------------------------
 
-                // c) Create EKF & new JPDA_Track
-                ITrackerFilter ekf = new ManeuveringEKF(initState, initCov, AccelNoise);
+                // c) Create EKF & new JPDA_Track (align EKF baseline R with generator noise bases)
+                ITrackerFilter ekf = new ManeuveringEKF(initState, initCov, AccelNoise, RangeNoiseBase, AngleNoiseBase);
 
                 JPDA_Track newTrack = new JPDA_Track
                 {

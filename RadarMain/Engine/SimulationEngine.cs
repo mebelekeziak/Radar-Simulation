@@ -189,6 +189,9 @@ namespace RealRadarSim.Engine
                 // Mirror Doppler settings into TrackManager for fusion
                 trackManager.UseDopplerProcessing = useDopplerProcessing;
                 trackManager.VelocityNoiseStd = velocityNoiseStd;
+                // Also pass measurement noise bases so EKF baseline/gating aligns with generator
+                trackManager.RangeNoiseBase = rangeNoiseBase;
+                trackManager.AngleNoiseBase = angleNoiseBase;
 
                 string debugText = $"[DEBUG] Loaded radar config values:\n" +
                                    $"FrequencyHz: {FrequencyHz}\n" +
@@ -312,6 +315,9 @@ namespace RealRadarSim.Engine
             // Default Doppler disabled; keep TrackManager consistent
             trackManager.UseDopplerProcessing = Radar.UseDopplerProcessing;
             trackManager.VelocityNoiseStd = Radar.VelocityNoiseStd;
+            // Align TrackManager noise bases with defaults used in AdvancedRadar above
+            trackManager.RangeNoiseBase = 100.0;
+            trackManager.AngleNoiseBase = 0.001;
             SetDefaultTargets();
         }
 
